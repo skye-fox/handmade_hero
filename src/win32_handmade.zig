@@ -11,6 +11,8 @@ const zig32 = struct {
     usingnamespace @import("win32").foundation;
     usingnamespace @import("win32").graphics.gdi;
     usingnamespace @import("win32").system.memory;
+    usingnamespace @import("win32").ui.input.keyboard_and_mouse;
+    usingnamespace @import("win32").ui.input.xbox_controller;
     usingnamespace @import("win32").ui.windows_and_messaging;
     usingnamespace @import("win32").zig;
 };
@@ -50,7 +52,7 @@ fn win32GetWindowDimension(window: zig32.HWND) win32WindowDimension {
     return result;
 }
 
-fn win32RenderWeirdGradient(buffer: Win32OffscreenBuffer, blue_offset: i32, green_offset: i32) void {
+fn win32RenderWeirdGradient(buffer: *Win32OffscreenBuffer, blue_offset: i32, green_offset: i32) void {
     var row: [*]u8 = @ptrCast(buffer.memory);
     var y: i32 = 0;
     while (y < buffer.height) : (y += 1) {
@@ -95,7 +97,7 @@ fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32)
     buffer.pitch = @intCast(width * bytes_per_pixel);
 }
 
-fn win32DisplayBufferInWindow(device_context: ?zig32.HDC, width: i32, height: i32, buffer: Win32OffscreenBuffer) void {
+fn win32DisplayBufferInWindow(buffer: *Win32OffscreenBuffer, device_context: ?zig32.HDC, width: i32, height: i32) void {
     _ = zig32.StretchDIBits(device_context, 0, 0, width, height, 0, 0, buffer.width, buffer.height, buffer.memory, &buffer.info, zig32.DIB_RGB_COLORS, zig32.SRCCOPY);
 }
 
@@ -103,6 +105,42 @@ fn win32MainWindowCallBack(window: zig32.HWND, message: u32, w_param: zig32.WPAR
     var result: zig32.LRESULT = 0;
     switch (message) {
         zig32.WM_CLOSE, zig32.WM_DESTROY => global_running = false,
+        zig32.WM_KEYDOWN, zig32.WM_KEYUP, zig32.WM_SYSKEYDOWN, zig32.WM_SYSKEYUP => {
+            const vk_code: zig32.VIRTUAL_KEY = @enumFromInt(w_param);
+            const was_down: bool = ((l_param & (1 << 30)) != 0);
+            const is_down: bool = ((l_param & (1 << 31)) == 0);
+
+            if (was_down != is_down) {
+                switch (vk_code) {
+                    zig32.VK_W => {},
+                    zig32.VK_A => {},
+                    zig32.VK_S => {},
+                    zig32.VK_D => {},
+                    zig32.VK_Q => {},
+                    zig32.VK_E => {},
+                    zig32.VK_UP => {},
+                    zig32.VK_LEFT => {},
+                    zig32.VK_DOWN => {},
+                    zig32.VK_RIGHT => {},
+                    zig32.VK_ESCAPE => {
+                        std.print("escape: ", .{});
+                        if (is_down) {
+                            std.print("is_down ", .{});
+                        }
+                        if (was_down) {
+                            std.print("was_down ", .{});
+                        }
+                        std.print("\n", .{});
+                    },
+                    zig32.VK_SPACE => {},
+                    else => {},
+                }
+            }
+            const alt_is_down: bool = ((l_param & (1 << 29)) != 0);
+            if ((vk_code == zig32.VK_F4) and alt_is_down) {
+                global_running = false;
+            }
+        },
         zig32.WM_ACTIVATEAPP => {},
         zig32.WM_PAINT => {
             var paint: zig32.PAINTSTRUCT = std.zeroInit(zig32.PAINTSTRUCT, .{});
@@ -110,7 +148,7 @@ fn win32MainWindowCallBack(window: zig32.HWND, message: u32, w_param: zig32.WPAR
 
             const dimension: win32WindowDimension = win32GetWindowDimension(window);
 
-            win32DisplayBufferInWindow(device_context, dimension.width, dimension.height, global_back_buffer);
+            win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
             _ = zig32.EndPaint(window, &paint);
         },
         else => {
@@ -164,13 +202,65 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
                     _ = zig32.DispatchMessageA(&message);
                 }
 
-                win32RenderWeirdGradient(global_back_buffer, x_offset, y_offset);
+                var controller_index: win.DWORD = 0;
+                while (controller_index < zig32.XUSER_MAX_COUNT) : (controller_index += 1) {
+                    var controller_state: zig32.XINPUT_STATE = std.zeroInit(zig32.XINPUT_STATE, .{});
+                    if (zig32.XInputGetState(controller_index, &controller_state) == @intFromEnum(zig32.ERROR_SUCCESS)) {
+                        const game_pad: *zig32.XINPUT_GAMEPAD = &controller_state.Gamepad;
+
+                        const up: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_UP);
+                        const down: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_DOWN);
+                        const left: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_LEFT);
+                        const right: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_RIGHT);
+
+                        const left_shoulder: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_LEFT_SHOULDER);
+                        const right_shoulder: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_RIGHT_SHOULDER);
+
+                        const a_button: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_A);
+                        const b_button: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_B);
+                        const x_button: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_X);
+                        const y_button: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_Y);
+
+                        const left_stick_x: i16 = game_pad.sThumbLX;
+                        const left_stick_y: i16 = game_pad.sThumbLY;
+                        const right_stick_x: i16 = game_pad.sThumbRX;
+                        const right_stick_y: i16 = game_pad.sThumbRY;
+
+                        x_offset += @divTrunc(left_stick_x, 8000);
+                        y_offset += @divTrunc(left_stick_y, 8000);
+
+                        if (a_button) y_offset += 1;
+                        _ = up;
+                        _ = down;
+                        _ = left;
+                        _ = right;
+
+                        _ = left_shoulder;
+                        _ = right_shoulder;
+
+                        // _ = a_button;
+                        _ = b_button;
+                        _ = x_button;
+                        _ = y_button;
+
+                        // _ = left_stick_x;
+                        // _ = left_stick_y;
+                        _ = right_stick_x;
+                        _ = right_stick_y;
+                    } else {
+                        // The controller is unavailable
+                    }
+                }
+
+                // var vibration: zig32.XINPUT_VIBRATION = std.zeroInit(zig32.XINPUT_VIBRATION, .{});
+                // vibration.wLeftMotorSpeed = 60000;
+                // vibration.wRightMotorSpeed = 60000;
+                // _ = zig32.XInputSetState(0, &vibration);
+
+                win32RenderWeirdGradient(&global_back_buffer, x_offset, y_offset);
 
                 const dimension: win32WindowDimension = win32GetWindowDimension(window.?);
-                win32DisplayBufferInWindow(device_context, dimension.width, dimension.height, global_back_buffer);
-
-                x_offset += 1;
-                y_offset += 2;
+                win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
             }
         } else {
             // TODO: Logging
