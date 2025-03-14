@@ -10,6 +10,8 @@ const zig32 = struct {
     usingnamespace @import("win32");
     usingnamespace @import("win32").foundation;
     usingnamespace @import("win32").graphics.gdi;
+    usingnamespace @import("win32").media.audio;
+    usingnamespace @import("win32").media.audio.direct_sound;
     usingnamespace @import("win32").system.memory;
     usingnamespace @import("win32").ui.input.keyboard_and_mouse;
     usingnamespace @import("win32").ui.input.xbox_controller;
@@ -40,6 +42,52 @@ const win32WindowDimension = struct {
 
 var global_running = false;
 var global_back_buffer: Win32OffscreenBuffer = std.zeroInit(Win32OffscreenBuffer, .{});
+
+fn win32InitDSound(window: zig32.HWND, samples_per_second: u32, buffer_size: u32) void {
+    var direct_sound: ?*zig32.IDirectSound8 = std.zeroes(?*zig32.IDirectSound8);
+    if (zig32.SUCCEEDED(zig32.DirectSoundCreate8(null, &direct_sound, null))) {
+        var wave_format: zig32.WAVEFORMATEX = std.zeroInit(zig32.WAVEFORMATEX, .{});
+        wave_format.wFormatTag = zig32.WAVE_FORMAT_PCM;
+        wave_format.nChannels = 2;
+        wave_format.wBitsPerSample = 16;
+        wave_format.nBlockAlign = (wave_format.nChannels * wave_format.wBitsPerSample) / 8;
+        wave_format.nSamplesPerSec = samples_per_second;
+        wave_format.nAvgBytesPerSec = wave_format.nSamplesPerSec * wave_format.nBlockAlign;
+
+        if (zig32.SUCCEEDED(direct_sound.?.IDirectSound.SetCooperativeLevel(window, zig32.DSSCL_PRIORITY))) {
+            var buffer_description: zig32.DSBUFFERDESC = std.zeroInit(zig32.DSBUFFERDESC, .{});
+            buffer_description.dwSize = @sizeOf(zig32.DSBUFFERDESC);
+            buffer_description.dwFlags = zig32.DSBCAPS_PRIMARYBUFFER;
+
+            var primary_buffer: ?*zig32.IDirectSoundBuffer8 = std.zeroes(?*zig32.IDirectSoundBuffer8);
+            if (zig32.SUCCEEDED(direct_sound.?.IDirectSound.CreateSoundBuffer(&buffer_description, &primary_buffer, null))) {
+                if (zig32.SUCCEEDED(primary_buffer.?.IDirectSoundBuffer.SetFormat(&wave_format))) {
+                    std.print("Primary buffer format was set.\n", .{});
+                } else {
+                    // TODO: Logging
+                }
+            } else {
+                // TODO: Logging
+            }
+        } else {
+            // TODO: Logging
+        }
+
+        var buffer_description: zig32.DSBUFFERDESC = std.zeroInit(zig32.DSBUFFERDESC, .{});
+        buffer_description.dwSize = @sizeOf(zig32.DSBUFFERDESC);
+        buffer_description.dwBufferBytes = buffer_size;
+        buffer_description.lpwfxFormat = &wave_format;
+
+        var secondary_buffer: ?*zig32.IDirectSoundBuffer8 = std.zeroes(?*zig32.IDirectSoundBuffer8);
+        if (zig32.SUCCEEDED(direct_sound.?.IDirectSound.CreateSoundBuffer(&buffer_description, &secondary_buffer, null))) {
+            std.print("Secondary buffer created successfully.\n", .{});
+        } else {
+            // TODO: Logging
+        }
+    } else {
+        // TODO: Logging
+    }
+}
 
 fn win32GetWindowDimension(window: zig32.HWND) win32WindowDimension {
     var result: win32WindowDimension = std.zeroInit(win32WindowDimension, .{});
@@ -92,7 +140,7 @@ fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32)
     buffer.info.bmiHeader.biCompression = zig32.BI_RGB;
 
     const bitmap_memory_size: usize = @intCast((buffer.width * buffer.height) * bytes_per_pixel);
-    buffer.memory = zig32.VirtualAlloc(null, bitmap_memory_size, zig32.MEM_COMMIT, zig32.PAGE_READWRITE);
+    buffer.memory = zig32.VirtualAlloc(null, bitmap_memory_size, zig32.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COMMIT = 1 }, zig32.PAGE_READWRITE);
 
     buffer.pitch = @intCast(width * bytes_per_pixel);
 }
@@ -192,6 +240,8 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
 
             var x_offset: i32 = 0;
             var y_offset: i32 = 0;
+
+            win32InitDSound(window.?, 48000, 48000 * @sizeOf(i16) * 2);
 
             global_running = true;
             while (global_running) {
