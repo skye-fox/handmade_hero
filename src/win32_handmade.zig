@@ -35,13 +35,73 @@ const Win32OffscreenBuffer = struct {
     pitch: u32,
 };
 
-const win32WindowDimension = struct {
+const Win32WindowDimension = struct {
     width: i32,
     height: i32,
 };
 
+const Win32SoundOutput = struct {
+    samples_per_second: u32,
+    tone_hz: i32,
+    tone_volume: i16,
+    running_sample_index: u32,
+    wave_period: i32,
+    bytes_per_sample: u32,
+    secondary_buffer_size: u32,
+    t_sine: f32,
+    latency_sample_count: u32,
+};
+
+const pi: f32 = 3.14159265359;
+
 var global_running = false;
 var global_back_buffer: Win32OffscreenBuffer = std.zeroInit(Win32OffscreenBuffer, .{});
+var global_secondary_buffer: ?*zig32.IDirectSoundBuffer8 = std.zeroes(?*zig32.IDirectSoundBuffer8);
+
+fn win32FillSoundBuffer(sound_output: *Win32SoundOutput, byte_to_lock: win.DWORD, bytes_to_write: win.DWORD) void {
+    var region1: ?*anyopaque = null;
+    var region1_size: win.DWORD = 0;
+    var region2: ?*anyopaque = null;
+    var region2_size: win.DWORD = 0;
+
+    if (zig32.SUCCEEDED(global_secondary_buffer.?.IDirectSoundBuffer.Lock(byte_to_lock, bytes_to_write, &region1, &region1_size, &region2, &region2_size, 0))) {
+        const region1_sample_count: win.DWORD = region1_size / sound_output.bytes_per_sample;
+        var sample_out: [*]i16 = @alignCast(@ptrCast(region1));
+
+        var sample_index: win.DWORD = 0;
+        while (sample_index < region1_sample_count) : (sample_index += 1) {
+            const sine_value: f32 = @sin(sound_output.t_sine);
+            const sample_value: i16 = @intFromFloat(sine_value * @as(f32, @floatFromInt(sound_output.tone_volume)));
+            sample_out[0] = sample_value;
+            sample_out += 1;
+            sample_out[0] = sample_value;
+            sample_out += 1;
+
+            sound_output.t_sine += 2.0 * pi * 1.0 / @as(f32, @floatFromInt(sound_output.wave_period));
+            sound_output.running_sample_index += 1;
+        }
+
+        if (region2) |_| {
+            const region2_sample_count: win.DWORD = region2_size / sound_output.bytes_per_sample;
+            sample_out = @alignCast(@ptrCast(region2));
+
+            sample_index = 0;
+            while (sample_index < region2_sample_count) : (sample_index += 1) {
+                const sine_value: f32 = @sin(sound_output.t_sine);
+                const sample_value: i16 = @intFromFloat(sine_value * @as(f32, @floatFromInt(sound_output.tone_volume)));
+                sample_out[0] = sample_value;
+                sample_out += 1;
+                sample_out[0] = sample_value;
+                sample_out += 1;
+
+                sound_output.t_sine += 2.0 * pi * 1.0 / @as(f32, @floatFromInt(sound_output.wave_period));
+                sound_output.running_sample_index += 1;
+            }
+        }
+    }
+
+    _ = global_secondary_buffer.?.IDirectSoundBuffer.Unlock(region1, region1_size, region2, region2_size);
+}
 
 fn win32InitDSound(window: zig32.HWND, samples_per_second: u32, buffer_size: u32) void {
     var direct_sound: ?*zig32.IDirectSound8 = std.zeroes(?*zig32.IDirectSound8);
@@ -78,8 +138,7 @@ fn win32InitDSound(window: zig32.HWND, samples_per_second: u32, buffer_size: u32
         buffer_description.dwBufferBytes = buffer_size;
         buffer_description.lpwfxFormat = &wave_format;
 
-        var secondary_buffer: ?*zig32.IDirectSoundBuffer8 = std.zeroes(?*zig32.IDirectSoundBuffer8);
-        if (zig32.SUCCEEDED(direct_sound.?.IDirectSound.CreateSoundBuffer(&buffer_description, &secondary_buffer, null))) {
+        if (zig32.SUCCEEDED(direct_sound.?.IDirectSound.CreateSoundBuffer(&buffer_description, &global_secondary_buffer, null))) {
             std.print("Secondary buffer created successfully.\n", .{});
         } else {
             // TODO: Logging
@@ -89,8 +148,8 @@ fn win32InitDSound(window: zig32.HWND, samples_per_second: u32, buffer_size: u32
     }
 }
 
-fn win32GetWindowDimension(window: zig32.HWND) win32WindowDimension {
-    var result: win32WindowDimension = std.zeroInit(win32WindowDimension, .{});
+fn win32GetWindowDimension(window: zig32.HWND) Win32WindowDimension {
+    var result: Win32WindowDimension = std.zeroInit(Win32WindowDimension, .{});
 
     var client_rect: zig32.RECT = std.zeroInit(zig32.RECT, .{});
     _ = zig32.GetClientRect(window, &client_rect);
@@ -194,7 +253,7 @@ fn win32MainWindowCallBack(window: zig32.HWND, message: u32, w_param: zig32.WPAR
             var paint: zig32.PAINTSTRUCT = std.zeroInit(zig32.PAINTSTRUCT, .{});
             const device_context: ?zig32.HDC = zig32.BeginPaint(window, &paint);
 
-            const dimension: win32WindowDimension = win32GetWindowDimension(window);
+            const dimension: Win32WindowDimension = win32GetWindowDimension(window);
 
             win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
             _ = zig32.EndPaint(window, &paint);
@@ -241,7 +300,24 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
             var x_offset: i32 = 0;
             var y_offset: i32 = 0;
 
-            win32InitDSound(window.?, 48000, 48000 * @sizeOf(i16) * 2);
+            var sound_output: Win32SoundOutput = .{
+                .samples_per_second = 48000,
+                .tone_hz = 256,
+                .tone_volume = 2000,
+                .running_sample_index = 0,
+                .wave_period = 0,
+                .bytes_per_sample = @sizeOf(i16) * 2,
+                .secondary_buffer_size = 0,
+                .t_sine = 0.0,
+                .latency_sample_count = 0,
+            };
+            sound_output.wave_period = @divTrunc(@as(i32, @intCast(sound_output.samples_per_second)), sound_output.tone_hz);
+            sound_output.secondary_buffer_size = sound_output.samples_per_second * sound_output.bytes_per_sample;
+            sound_output.latency_sample_count = sound_output.samples_per_second / 15;
+
+            win32InitDSound(window.?, sound_output.samples_per_second, sound_output.secondary_buffer_size);
+            win32FillSoundBuffer(&sound_output, 0, sound_output.latency_sample_count * sound_output.bytes_per_sample);
+            _ = global_secondary_buffer.?.IDirectSoundBuffer.Play(0, 0, zig32.DSBPLAY_LOOPING);
 
             global_running = true;
             while (global_running) {
@@ -276,10 +352,17 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
                         const right_stick_x: i16 = game_pad.sThumbRX;
                         const right_stick_y: i16 = game_pad.sThumbRY;
 
-                        x_offset += @divTrunc(left_stick_x, 8000);
-                        y_offset += @divTrunc(left_stick_y, 8000);
+                        x_offset += @divTrunc(left_stick_x, 4000);
+                        y_offset += @divTrunc(left_stick_y, 4000);
 
-                        if (a_button) y_offset += 1;
+                        sound_output.tone_hz = 512 + @as(i32, @intFromFloat(256.0 * (@as(f32, @floatFromInt(left_stick_y)) / 3000.0)));
+                        sound_output.wave_period = @divTrunc(@as(i32, @intCast(sound_output.samples_per_second)), sound_output.tone_hz);
+
+                        if (a_button) {
+                            sound_output.tone_hz = 512;
+                            sound_output.wave_period = @divTrunc(@as(i32, @intCast(sound_output.samples_per_second)), sound_output.tone_hz);
+                            y_offset += 1;
+                        }
                         _ = up;
                         _ = down;
                         _ = left;
@@ -309,7 +392,25 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
 
                 win32RenderWeirdGradient(&global_back_buffer, x_offset, y_offset);
 
-                const dimension: win32WindowDimension = win32GetWindowDimension(window.?);
+                var play_cursor: win.DWORD = 0;
+                var write_cursor: win.DWORD = 0;
+
+                if (zig32.SUCCEEDED(global_secondary_buffer.?.IDirectSoundBuffer.GetCurrentPosition(&play_cursor, &write_cursor))) {
+                    const byte_to_lock: win.DWORD = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
+                    const target_cursor: win.DWORD = ((play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.secondary_buffer_size);
+                    var bytes_to_write: win.DWORD = 0;
+
+                    if (byte_to_lock > target_cursor) {
+                        bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
+                        bytes_to_write += target_cursor;
+                    } else {
+                        bytes_to_write = target_cursor - byte_to_lock;
+                    }
+
+                    win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write);
+                }
+
+                const dimension: Win32WindowDimension = win32GetWindowDimension(window.?);
                 win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
             }
         } else {
