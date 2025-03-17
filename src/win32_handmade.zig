@@ -12,6 +12,7 @@ const zig32 = struct {
     usingnamespace @import("win32").graphics.gdi;
     usingnamespace @import("win32").media.audio;
     usingnamespace @import("win32").media.audio.direct_sound;
+    usingnamespace @import("win32").system.performance;
     usingnamespace @import("win32").system.memory;
     usingnamespace @import("win32").ui.input.keyboard_and_mouse;
     usingnamespace @import("win32").ui.input.xbox_controller;
@@ -57,6 +58,16 @@ const pi: f32 = 3.14159265359;
 var global_running = false;
 var global_back_buffer: Win32OffscreenBuffer = std.zeroInit(Win32OffscreenBuffer, .{});
 var global_secondary_buffer: ?*zig32.IDirectSoundBuffer8 = std.zeroes(?*zig32.IDirectSoundBuffer8);
+
+inline fn rdtsc() usize {
+    var a: u32 = undefined;
+    var b: u32 = undefined;
+    asm volatile ("rdtsc"
+        : [a] "={edx}" (a),
+          [b] "={eax}" (b),
+    );
+    return (@as(u64, a) << 32) | b;
+}
 
 fn win32FillSoundBuffer(sound_output: *Win32SoundOutput, byte_to_lock: win.DWORD, bytes_to_write: win.DWORD) void {
     var region1: ?*anyopaque = null;
@@ -270,6 +281,10 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
     _ = cmd_line;
     _ = cmd_show;
 
+    var perf_count_frequency_result: zig32.LARGE_INTEGER = undefined;
+    _ = zig32.QueryPerformanceFrequency(&perf_count_frequency_result);
+    const perf_count_frequency: i64 = perf_count_frequency_result.QuadPart;
+
     var window_class = std.zeroInit(zig32.WNDCLASSA, .{});
 
     win32ResizeDIBSection(&global_back_buffer, 1280, 720);
@@ -320,6 +335,11 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
             _ = global_secondary_buffer.?.IDirectSoundBuffer.Play(0, 0, zig32.DSBPLAY_LOOPING);
 
             global_running = true;
+
+            var last_counter: zig32.LARGE_INTEGER = undefined;
+            _ = zig32.QueryPerformanceCounter(&last_counter);
+            var last_cycle_count: usize = rdtsc();
+
             while (global_running) {
                 var message: zig32.MSG = undefined;
                 while (zig32.PeekMessageA(&message, null, 0, 0, zig32.PM_REMOVE) != 0) {
@@ -412,6 +432,21 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
 
                 const dimension: Win32WindowDimension = win32GetWindowDimension(window.?);
                 win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
+
+                var end_counter: zig32.LARGE_INTEGER = undefined;
+                _ = zig32.QueryPerformanceCounter(&end_counter);
+                const end_cycle_count: usize = rdtsc();
+
+                const cycles_elapsed: usize = end_cycle_count - last_cycle_count;
+                const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
+                const milliseconds_per_frame: f64 = (1000.0 * @as(f64, @floatFromInt(counter_elapsed))) / @as(f64, @floatFromInt(perf_count_frequency));
+                const fps: f64 = @as(f64, @floatFromInt(perf_count_frequency)) / @as(f64, @floatFromInt(counter_elapsed));
+                const mega_cycles_per_frame: f64 = @as(f64, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
+
+                std.print("{d:.4} ms/f, {d:.4} f/s, {d:.4} mc/f\n", .{ milliseconds_per_frame, fps, mega_cycles_per_frame });
+
+                last_counter = end_counter;
+                last_cycle_count = end_cycle_count;
             }
         } else {
             // TODO: Logging
