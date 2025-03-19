@@ -6,6 +6,9 @@ const std = struct {
 
 const win = std.os.windows;
 
+const builtin = @import("builtin");
+const dbg = builtin.mode == @import("std").builtin.Mode.Debug;
+
 const zig32 = struct {
     usingnamespace @import("win32");
     usingnamespace @import("win32").foundation;
@@ -328,170 +331,194 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
 
             global_running = true;
 
-            const samples: *i16 = @alignCast(@ptrCast(zig32.VirtualAlloc(null, sound_output.secondary_buffer_size, zig32.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COMMIT = 1 }, zig32.PAGE_READWRITE)));
+            const samples: ?*i16 = @alignCast(@ptrCast(zig32.VirtualAlloc(null, sound_output.secondary_buffer_size, zig32.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COMMIT = 1 }, zig32.PAGE_READWRITE)));
 
-            var input: [2]hm.GameInput = std.zeroes([2]hm.GameInput);
-            var new_input: *hm.GameInput = &input[0];
-            var old_input: *hm.GameInput = &input[1];
+            const base_address: ?win.LPVOID = if (dbg) @ptrFromInt(hm.terabytes(2)) else null;
 
-            var last_counter: zig32.LARGE_INTEGER = undefined;
-            _ = zig32.QueryPerformanceCounter(&last_counter);
-            var last_cycle_count: usize = rdtsc();
+            var game_memory: hm.GameMemory = .{
+                .is_initialized = false,
+                .permanent_storage_size = 0,
+                .permanent_storage = null,
+                .transient_storage_size = 0,
+                .transient_storage = null,
+            };
 
-            while (global_running) {
-                var message: zig32.MSG = undefined;
+            game_memory.permanent_storage_size = hm.megabytes(64);
+            game_memory.transient_storage_size = hm.gigabytes(4);
 
-                while (zig32.PeekMessageA(&message, null, 0, 0, zig32.PM_REMOVE) != 0) {
-                    if (message.message == zig32.WM_QUIT) global_running = false;
-                    _ = zig32.TranslateMessage(&message);
-                    _ = zig32.DispatchMessageA(&message);
-                }
+            const total_size: u64 = game_memory.permanent_storage_size + game_memory.transient_storage_size;
+            game_memory.permanent_storage = zig32.VirtualAlloc(base_address, total_size, zig32.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COMMIT = 1 }, zig32.PAGE_READWRITE);
+            game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.permanent_storage_size;
 
-                var max_controller_count = zig32.XUSER_MAX_COUNT;
-                if (max_controller_count > new_input.controllers.len - 1) {
-                    max_controller_count = new_input.controllers.len - 1;
-                }
+            std.print("permanent_storage: {*}\n", .{game_memory.permanent_storage});
+            std.print("transient_storage: {*}\n", .{game_memory.transient_storage});
 
-                var controller_index: win.DWORD = 0;
-                while (controller_index < max_controller_count) : (controller_index += 1) {
-                    const old_controller: *hm.GameControllerInput = &old_input.controllers[controller_index];
-                    const new_controller: *hm.GameControllerInput = &new_input.controllers[controller_index];
+            if (samples != null and game_memory.permanent_storage != null and game_memory.transient_storage != null) {
+                var input: [2]hm.GameInput = std.zeroes([2]hm.GameInput);
+                var new_input: *hm.GameInput = &input[0];
+                var old_input: *hm.GameInput = &input[1];
 
-                    var controller_state: zig32.XINPUT_STATE = std.zeroInit(zig32.XINPUT_STATE, .{});
-                    if (zig32.XInputGetState(controller_index, &controller_state) == @intFromEnum(zig32.ERROR_SUCCESS)) {
-                        const game_pad: *zig32.XINPUT_GAMEPAD = &controller_state.Gamepad;
+                var last_counter: zig32.LARGE_INTEGER = undefined;
+                _ = zig32.QueryPerformanceCounter(&last_counter);
+                var last_cycle_count: usize = rdtsc();
 
-                        const up: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_UP);
-                        const down: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_DOWN);
-                        const left: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_LEFT);
-                        const right: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_RIGHT);
+                while (global_running) {
+                    var message: zig32.MSG = undefined;
 
-                        new_controller.is_analog = true;
-                        new_controller.start_x = old_controller.end_x;
-                        new_controller.start_y = old_controller.end_y;
-
-                        var x: f32 = 0.0;
-                        if (game_pad.sThumbLX < 0) {
-                            x = @as(f32, @floatFromInt(game_pad.sThumbLX)) / 32768.0;
-                        } else {
-                            x = @as(f32, @floatFromInt(game_pad.sThumbLX)) / 32767.0;
-                        }
-
-                        new_controller.min_x = x;
-                        new_controller.max_x = x;
-                        new_controller.end_x = x;
-
-                        var y: f32 = 0.0;
-                        if (game_pad.sThumbLY < 0) {
-                            y = @as(f32, @floatFromInt(game_pad.sThumbLY)) / 32768.0;
-                        } else {
-                            y = @as(f32, @floatFromInt(game_pad.sThumbLY)) / 32767.0;
-                        }
-
-                        new_controller.min_y = y;
-                        new_controller.max_y = y;
-                        new_controller.end_y = y;
-
-                        const right_stick_x: i16 = game_pad.sThumbRX;
-                        const right_stick_y: i16 = game_pad.sThumbRY;
-
-                        win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.down, &new_controller.button_union.button_input.down, zig32.XINPUT_GAMEPAD_A);
-                        win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.up, &new_controller.button_union.button_input.up, zig32.XINPUT_GAMEPAD_Y);
-                        win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.left, &new_controller.button_union.button_input.left, zig32.XINPUT_GAMEPAD_X);
-                        win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.right, &new_controller.button_union.button_input.right, zig32.XINPUT_GAMEPAD_B);
-
-                        win32ProcessXInputDigitalButton(
-                            game_pad.wButtons,
-                            &old_controller.button_union.button_input.left_shoulder,
-                            &new_controller.button_union.button_input.left_shoulder,
-                            zig32.XINPUT_GAMEPAD_LEFT_SHOULDER,
-                        );
-                        win32ProcessXInputDigitalButton(
-                            game_pad.wButtons,
-                            &old_controller.button_union.button_input.right_shoulder,
-                            &new_controller.button_union.button_input.right_shoulder,
-                            zig32.XINPUT_GAMEPAD_RIGHT_SHOULDER,
-                        );
-
-                        _ = up;
-                        _ = down;
-                        _ = left;
-                        _ = right;
-
-                        _ = right_stick_x;
-                        _ = right_stick_y;
-                    } else {
-                        // The controller is unavailable
-                    }
-                }
-
-                // var vibration: zig32.XINPUT_VIBRATION = std.zeroInit(zig32.XINPUT_VIBRATION, .{});
-                // vibration.wLeftMotorSpeed = 60000;
-                // vibration.wRightMotorSpeed = 60000;
-                // _ = zig32.XInputSetState(0, &vibration);
-                var byte_to_lock: win.DWORD = 0;
-                var bytes_to_write: win.DWORD = 0;
-                var play_cursor: win.DWORD = 0;
-                var write_cursor: win.DWORD = 0;
-                var target_cursor: win.DWORD = 0;
-                var sound_is_valid: bool = false;
-
-                if (zig32.SUCCEEDED(global_secondary_buffer.?.IDirectSoundBuffer.GetCurrentPosition(&play_cursor, &write_cursor))) {
-                    byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
-                    target_cursor = ((play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.secondary_buffer_size);
-
-                    if (byte_to_lock > target_cursor) {
-                        bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
-                        bytes_to_write += target_cursor;
-                    } else {
-                        bytes_to_write = target_cursor - byte_to_lock;
+                    while (zig32.PeekMessageA(&message, null, 0, 0, zig32.PM_REMOVE) != 0) {
+                        if (message.message == zig32.WM_QUIT) global_running = false;
+                        _ = zig32.TranslateMessage(&message);
+                        _ = zig32.DispatchMessageA(&message);
                     }
 
-                    sound_is_valid = true;
+                    var max_controller_count = zig32.XUSER_MAX_COUNT;
+                    if (max_controller_count > new_input.controllers.len - 1) {
+                        max_controller_count = new_input.controllers.len - 1;
+                    }
+
+                    var controller_index: win.DWORD = 0;
+                    while (controller_index < max_controller_count) : (controller_index += 1) {
+                        const old_controller: *hm.GameControllerInput = &old_input.controllers[controller_index];
+                        const new_controller: *hm.GameControllerInput = &new_input.controllers[controller_index];
+
+                        var controller_state: zig32.XINPUT_STATE = std.zeroInit(zig32.XINPUT_STATE, .{});
+                        if (zig32.XInputGetState(controller_index, &controller_state) == @intFromEnum(zig32.ERROR_SUCCESS)) {
+                            const game_pad: *zig32.XINPUT_GAMEPAD = &controller_state.Gamepad;
+
+                            const up: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_UP);
+                            const down: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_DOWN);
+                            const left: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_LEFT);
+                            const right: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_RIGHT);
+
+                            new_controller.is_analog = true;
+                            new_controller.start_x = old_controller.end_x;
+                            new_controller.start_y = old_controller.end_y;
+
+                            var x: f32 = 0.0;
+                            if (game_pad.sThumbLX < 0) {
+                                x = @as(f32, @floatFromInt(game_pad.sThumbLX)) / 32768.0;
+                            } else {
+                                x = @as(f32, @floatFromInt(game_pad.sThumbLX)) / 32767.0;
+                            }
+
+                            new_controller.min_x = x;
+                            new_controller.max_x = x;
+                            new_controller.end_x = x;
+
+                            var y: f32 = 0.0;
+                            if (game_pad.sThumbLY < 0) {
+                                y = @as(f32, @floatFromInt(game_pad.sThumbLY)) / 32768.0;
+                            } else {
+                                y = @as(f32, @floatFromInt(game_pad.sThumbLY)) / 32767.0;
+                            }
+
+                            new_controller.min_y = y;
+                            new_controller.max_y = y;
+                            new_controller.end_y = y;
+
+                            const right_stick_x: i16 = game_pad.sThumbRX;
+                            const right_stick_y: i16 = game_pad.sThumbRY;
+
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.down, &new_controller.button_union.button_input.down, zig32.XINPUT_GAMEPAD_A);
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.up, &new_controller.button_union.button_input.up, zig32.XINPUT_GAMEPAD_Y);
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.left, &new_controller.button_union.button_input.left, zig32.XINPUT_GAMEPAD_X);
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.right, &new_controller.button_union.button_input.right, zig32.XINPUT_GAMEPAD_B);
+
+                            win32ProcessXInputDigitalButton(
+                                game_pad.wButtons,
+                                &old_controller.button_union.button_input.left_shoulder,
+                                &new_controller.button_union.button_input.left_shoulder,
+                                zig32.XINPUT_GAMEPAD_LEFT_SHOULDER,
+                            );
+                            win32ProcessXInputDigitalButton(
+                                game_pad.wButtons,
+                                &old_controller.button_union.button_input.right_shoulder,
+                                &new_controller.button_union.button_input.right_shoulder,
+                                zig32.XINPUT_GAMEPAD_RIGHT_SHOULDER,
+                            );
+
+                            _ = up;
+                            _ = down;
+                            _ = left;
+                            _ = right;
+
+                            _ = right_stick_x;
+                            _ = right_stick_y;
+                        } else {
+                            // The controller is unavailable
+                        }
+                    }
+
+                    // var vibration: zig32.XINPUT_VIBRATION = std.zeroInit(zig32.XINPUT_VIBRATION, .{});
+                    // vibration.wLeftMotorSpeed = 60000;
+                    // vibration.wRightMotorSpeed = 60000;
+                    // _ = zig32.XInputSetState(0, &vibration);
+                    var byte_to_lock: win.DWORD = 0;
+                    var bytes_to_write: win.DWORD = 0;
+                    var play_cursor: win.DWORD = 0;
+                    var write_cursor: win.DWORD = 0;
+                    var target_cursor: win.DWORD = 0;
+                    var sound_is_valid: bool = false;
+
+                    if (zig32.SUCCEEDED(global_secondary_buffer.?.IDirectSoundBuffer.GetCurrentPosition(&play_cursor, &write_cursor))) {
+                        byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
+                        target_cursor = ((play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.secondary_buffer_size);
+
+                        if (byte_to_lock > target_cursor) {
+                            bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
+                            bytes_to_write += target_cursor;
+                        } else {
+                            bytes_to_write = target_cursor - byte_to_lock;
+                        }
+
+                        sound_is_valid = true;
+                    }
+
+                    var sound_buffer: hm.GameOutputSoundBuffer = .{
+                        .samples_per_second = sound_output.samples_per_second,
+                        .sample_count = bytes_to_write / sound_output.bytes_per_sample,
+                        .samples = samples.?,
+                    };
+
+                    var buffer: hm.GameOffscreenBuffer = .{
+                        .memory = global_back_buffer.memory,
+                        .width = global_back_buffer.width,
+                        .height = global_back_buffer.height,
+                        .pitch = global_back_buffer.pitch,
+                    };
+                    hm.gameUpdateAndRender(&game_memory, new_input, &buffer, &sound_buffer);
+
+                    if (sound_is_valid) {
+                        win32FillSoundBuffer(&sound_output, &sound_buffer, byte_to_lock, bytes_to_write);
+                    }
+
+                    const dimension: Win32WindowDimension = win32GetWindowDimension(window.?);
+                    win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
+
+                    var end_counter: zig32.LARGE_INTEGER = undefined;
+                    _ = zig32.QueryPerformanceCounter(&end_counter);
+                    const end_cycle_count: usize = rdtsc();
+
+                    const cycles_elapsed: usize = end_cycle_count - last_cycle_count;
+                    const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
+                    const milliseconds_per_frame: f64 = (1000.0 * @as(f64, @floatFromInt(counter_elapsed))) / @as(f64, @floatFromInt(perf_count_frequency));
+                    const fps: f64 = @as(f64, @floatFromInt(perf_count_frequency)) / @as(f64, @floatFromInt(counter_elapsed));
+                    const mega_cycles_per_frame: f64 = @as(f64, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
+
+                    _ = milliseconds_per_frame;
+                    _ = fps;
+                    _ = mega_cycles_per_frame;
+                    // std.print("{d:.4} ms/f, {d:.4} f/s, {d:.4} mc/f\n", .{ milliseconds_per_frame, fps, mega_cycles_per_frame });
+
+                    last_counter = end_counter;
+                    last_cycle_count = end_cycle_count;
+
+                    const temp_input: *hm.GameInput = new_input;
+                    new_input = old_input;
+                    old_input = temp_input;
                 }
-
-                var sound_buffer: hm.GameOutputSoundBuffer = .{
-                    .samples_per_second = sound_output.samples_per_second,
-                    .sample_count = bytes_to_write / sound_output.bytes_per_sample,
-                    .samples = samples,
-                };
-
-                var buffer: hm.GameOffscreenBuffer = .{
-                    .memory = global_back_buffer.memory,
-                    .width = global_back_buffer.width,
-                    .height = global_back_buffer.height,
-                    .pitch = global_back_buffer.pitch,
-                };
-                hm.gameUpdateAndRender(new_input, &buffer, &sound_buffer);
-
-                if (sound_is_valid) {
-                    win32FillSoundBuffer(&sound_output, &sound_buffer, byte_to_lock, bytes_to_write);
-                }
-
-                const dimension: Win32WindowDimension = win32GetWindowDimension(window.?);
-                win32DisplayBufferInWindow(&global_back_buffer, device_context, dimension.width, dimension.height);
-
-                var end_counter: zig32.LARGE_INTEGER = undefined;
-                _ = zig32.QueryPerformanceCounter(&end_counter);
-                const end_cycle_count: usize = rdtsc();
-
-                const cycles_elapsed: usize = end_cycle_count - last_cycle_count;
-                const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
-                const milliseconds_per_frame: f64 = (1000.0 * @as(f64, @floatFromInt(counter_elapsed))) / @as(f64, @floatFromInt(perf_count_frequency));
-                const fps: f64 = @as(f64, @floatFromInt(perf_count_frequency)) / @as(f64, @floatFromInt(counter_elapsed));
-                const mega_cycles_per_frame: f64 = @as(f64, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
-
-                _ = milliseconds_per_frame;
-                _ = fps;
-                _ = mega_cycles_per_frame;
-                // std.print("{d:.4} ms/f, {d:.4} f/s, {d:.4} mc/f\n", .{ milliseconds_per_frame, fps, mega_cycles_per_frame });
-
-                last_counter = end_counter;
-                last_cycle_count = end_cycle_count;
-
-                const temp_input: *hm.GameInput = new_input;
-                new_input = old_input;
-                old_input = temp_input;
+            } else {
+                // TODO: Logging
             }
         } else {
             // TODO: Logging

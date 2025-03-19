@@ -1,3 +1,9 @@
+const std = struct {
+    usingnamespace @import("std");
+    usingnamespace @import("std").math;
+    usingnamespace @import("std").debug;
+};
+
 pub const GameOffscreenBuffer = struct {
     memory: ?*anyopaque,
     width: i32,
@@ -52,12 +58,40 @@ pub const GameControllerInput = extern struct {
     },
 };
 
+pub const GameMemory = struct {
+    is_initialized: bool,
+    permanent_storage_size: u64,
+    permanent_storage: ?*anyopaque,
+    transient_storage_size: u64,
+    transient_storage: ?*anyopaque,
+};
+
+const GameState = struct {
+    tone_hz: i32,
+    blue_offset: i32,
+    green_offset: i32,
+};
+
 pub const GameInput = struct { controllers: [4]GameControllerInput };
 
 const pi: f32 = 3.14159265359;
 var t_sine: f32 = 0.0;
-var b_offset: i32 = 0;
-var g_offset: i32 = 0;
+
+pub fn kilobytes(value: u64) u64 {
+    return value * 1024;
+}
+
+pub fn megabytes(value: u64) u64 {
+    return value * std.pow(u64, 1024, 2);
+}
+
+pub fn gigabytes(value: u64) u64 {
+    return value * std.pow(u64, 1024, 3);
+}
+
+pub fn terabytes(value: u64) u64 {
+    return value * std.pow(u64, 1024, 4);
+}
 
 fn gameOutputSound(sound_buffer: *GameOutputSoundBuffer, tone_hz: i32) void {
     const tone_volume: i16 = 2000;
@@ -100,23 +134,33 @@ fn renderWeirdGradient(buffer: *GameOffscreenBuffer, blue_offset: i32, green_off
     }
 }
 
-pub fn gameUpdateAndRender(input: *GameInput, buffer: *GameOffscreenBuffer, sound_buffer: *GameOutputSoundBuffer) void {
-    var tone_hz: i32 = 256;
+pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *GameOffscreenBuffer, sound_buffer: *GameOutputSoundBuffer) void {
+    std.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
+
+    var game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
+
+    if (!memory.is_initialized) {
+        game_state.tone_hz = 256;
+        game_state.blue_offset = 0;
+        game_state.green_offset = 0;
+
+        memory.is_initialized = true;
+    }
 
     const input0: *GameControllerInput = &input.controllers[0];
 
     if (input0.is_analog) {
         // analog movement
-        b_offset += @intFromFloat(4.0 * input0.end_x);
-        tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.end_y));
+        game_state.blue_offset += @intFromFloat(4.0 * input0.end_x);
+        game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.end_y));
     } else {
         // digital movement
     }
 
     if (input0.button_union.button_input.down.ended_down) {
-        g_offset += 1;
+        game_state.green_offset += 1;
     }
 
-    gameOutputSound(sound_buffer, tone_hz);
-    renderWeirdGradient(buffer, b_offset, g_offset);
+    gameOutputSound(sound_buffer, game_state.tone_hz);
+    renderWeirdGradient(buffer, game_state.blue_offset, game_state.green_offset);
 }
