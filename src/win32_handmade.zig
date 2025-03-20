@@ -6,17 +6,18 @@ const std = struct {
 
 const win = std.os.windows;
 
-const builtin = @import("builtin");
-const dbg = builtin.mode == @import("std").builtin.Mode.Debug;
+const dbg = @import("builtin").mode == @import("std").builtin.Mode.Debug;
 
 const zig32 = struct {
     usingnamespace @import("win32");
+    usingnamespace @import("win32").storage.file_system;
     usingnamespace @import("win32").foundation;
     usingnamespace @import("win32").graphics.gdi;
     usingnamespace @import("win32").media.audio;
     usingnamespace @import("win32").media.audio.direct_sound;
     usingnamespace @import("win32").system.performance;
     usingnamespace @import("win32").system.memory;
+    usingnamespace @import("win32").system.system_services;
     usingnamespace @import("win32").ui.input.keyboard_and_mouse;
     usingnamespace @import("win32").ui.input.xbox_controller;
     usingnamespace @import("win32").ui.windows_and_messaging;
@@ -46,6 +47,11 @@ const Win32SoundOutput = struct {
     latency_sample_count: u32,
 };
 
+pub const DEBUGPlatformReadFileResult = struct {
+    contents_size: u32,
+    contents: ?*anyopaque,
+};
+
 const pi: f32 = 3.14159265359;
 
 var global_running = false;
@@ -60,6 +66,69 @@ inline fn rdtsc() usize {
           [b] "={eax}" (b),
     );
     return (@as(u64, a) << 32) | b;
+}
+
+pub fn DEBUGPlatformReadEntireFile(file_name: ?[*:0]const u8) DEBUGPlatformReadFileResult {
+    var result: DEBUGPlatformReadFileResult = .{
+        .contents_size = 0,
+        .contents = null,
+    };
+
+    const file_handle: zig32.HANDLE = zig32.CreateFileA(file_name, zig32.FILE_GENERIC_READ, zig32.FILE_SHARE_READ, null, zig32.OPEN_EXISTING, zig32.FILE_ATTRIBUTE_NORMAL, null);
+    if (file_handle != zig32.INVALID_HANDLE_VALUE) {
+        defer zig32.closeHandle(file_handle);
+
+        var file_size: zig32.LARGE_INTEGER = undefined;
+        if (zig32.GetFileSizeEx(file_handle, &file_size) != 0) {
+            std.assert(file_size.QuadPart <= 0xFFFFFF);
+
+            const file_size_32: u32 = @intCast(file_size.QuadPart);
+            result.contents = zig32.VirtualAlloc(null, file_size_32, zig32.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COMMIT = 1 }, zig32.PAGE_READWRITE);
+            if (result.contents) |_| {
+                var bytes_read: win.DWORD = 0;
+                if (zig32.ReadFile(file_handle, result.contents, file_size_32, &bytes_read, null) != 0 and (file_size_32 == bytes_read)) {
+                    result.contents_size = file_size_32;
+                } else {
+                    DEBUGPlatformFreeFileMemory(result.contents);
+                    result.contents = null;
+                }
+            } else {
+                // TODO: Logging
+            }
+        } else {
+            // TODO: Logging
+        }
+    } else {
+        // TODO: Logging
+    }
+
+    return result;
+}
+
+pub fn DEBUGPlatformFreeFileMemory(memory: ?*anyopaque) void {
+    if (memory) |_| {
+        _ = zig32.VirtualFree(memory, 0, zig32.MEM_RELEASE);
+    }
+}
+
+pub fn DEBUGPlatformWriteEntireFile(file_name: ?[*:0]const u8, memory_size: u32, memory: ?*anyopaque) bool {
+    var result: bool = false;
+
+    const file_handle: zig32.HANDLE = zig32.CreateFileA(file_name, zig32.FILE_GENERIC_WRITE, zig32.FILE_SHARE_NONE, null, zig32.CREATE_ALWAYS, zig32.FILE_ATTRIBUTE_NORMAL, null);
+    if (file_handle != zig32.INVALID_HANDLE_VALUE) {
+        defer zig32.closeHandle(file_handle);
+
+        var bytes_written: win.DWORD = 0;
+        if (zig32.WriteFile(file_handle, memory, memory_size, &bytes_written, null) != 0) {
+            result = (bytes_written == memory_size);
+        } else {
+            // TODO: Logging
+        }
+    } else {
+        // TODO: Logging
+    }
+
+    return result;
 }
 
 fn win32ProcessXInputDigitalButton(xinput_button_state: u16, old_state: *hm.GameButtonState, new_state: *hm.GameButtonState, button_bit: win.DWORD) void {
@@ -349,9 +418,6 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
             const total_size: u64 = game_memory.permanent_storage_size + game_memory.transient_storage_size;
             game_memory.permanent_storage = zig32.VirtualAlloc(base_address, total_size, zig32.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COMMIT = 1 }, zig32.PAGE_READWRITE);
             game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.permanent_storage_size;
-
-            std.print("permanent_storage: {*}\n", .{game_memory.permanent_storage});
-            std.print("transient_storage: {*}\n", .{game_memory.transient_storage});
 
             if (samples != null and game_memory.permanent_storage != null and game_memory.transient_storage != null) {
                 var input: [2]hm.GameInput = std.zeroes([2]hm.GameInput);

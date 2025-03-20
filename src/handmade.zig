@@ -4,6 +4,13 @@ const std = struct {
     usingnamespace @import("std").debug;
 };
 
+const dbg = @import("builtin").mode == @import("std").builtin.Mode.Debug;
+
+const DEBUGPlatformReadEntireFile = @import("win32_handmade.zig").DEBUGPlatformReadEntireFile;
+const DEBUGPlatformFreeFileMemory = @import("win32_handmade.zig").DEBUGPlatformFreeFileMemory;
+const DEBUGPlatformWriteEntireFile = @import("win32_handmade.zig").DEBUGPlatformWriteEntireFile;
+const DEBUGPlatformReadFileResult = @import("win32_handmade.zig").DEBUGPlatformReadFileResult;
+
 pub const GameOffscreenBuffer = struct {
     memory: ?*anyopaque,
     width: i32,
@@ -140,6 +147,15 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *Game
     var game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
 
     if (!memory.is_initialized) {
+        const file_name: ?[*:0]const u8 = "C:/Users/SkyeFox/code/learning/handmade_hero/assets/test.txt";
+
+        const file: DEBUGPlatformReadFileResult = if (dbg) DEBUGPlatformReadEntireFile(file_name) else null;
+
+        if (file.contents) |_| {
+            _ = DEBUGPlatformWriteEntireFile("C:/Users/SkyeFox/code/learning/handmade_hero/assets/test2.txt", file.contents_size, file.contents);
+            DEBUGPlatformFreeFileMemory(file.contents);
+        }
+
         game_state.tone_hz = 256;
         game_state.blue_offset = 0;
         game_state.green_offset = 0;
