@@ -131,6 +131,85 @@ pub fn DEBUGPlatformWriteEntireFile(file_name: ?[*:0]const u8, memory_size: u32,
     return result;
 }
 
+fn win32ProcessStickValue(value: win.SHORT, dead_zone_threshold: win.SHORT) f32 {
+    var result: f32 = 0.0;
+
+    if (value < -dead_zone_threshold) {
+        result = @as(f32, @floatFromInt(value + dead_zone_threshold)) / (32768.0 - @as(f32, @floatFromInt(dead_zone_threshold)));
+    } else if (value > dead_zone_threshold) {
+        result = @as(f32, @floatFromInt(@as(i32, value) + @as(i32, dead_zone_threshold))) / (32767.0 - @as(f32, @floatFromInt(dead_zone_threshold)));
+    }
+
+    return result;
+}
+
+fn win32ProcessPendingMessages(keyboard_controller: *hm.GameControllerInput) void {
+    var message: zig32.MSG = undefined;
+
+    while (zig32.PeekMessageA(&message, null, 0, 0, zig32.PM_REMOVE) != 0) {
+        switch (message.message) {
+            zig32.WM_QUIT => global_running = false,
+            zig32.WM_KEYDOWN, zig32.WM_KEYUP, zig32.WM_SYSKEYDOWN, zig32.WM_SYSKEYUP => {
+                const vk_code: zig32.VIRTUAL_KEY = @enumFromInt(message.wParam);
+                const was_down: bool = ((message.lParam & (1 << 30)) != 0);
+                const is_down: bool = ((message.lParam & (1 << 31)) == 0);
+
+                if (was_down != is_down) {
+                    switch (vk_code) {
+                        zig32.VK_W => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.move_up, is_down);
+                        },
+                        zig32.VK_A => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.move_left, is_down);
+                        },
+                        zig32.VK_S => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.move_down, is_down);
+                        },
+                        zig32.VK_D => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.move_right, is_down);
+                        },
+                        zig32.VK_Q => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.left_shoulder, is_down);
+                        },
+                        zig32.VK_E => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.right_shoulder, is_down);
+                        },
+                        zig32.VK_UP => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.action_up, is_down);
+                        },
+                        zig32.VK_LEFT => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.action_left, is_down);
+                        },
+                        zig32.VK_DOWN => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.action_down, is_down);
+                        },
+                        zig32.VK_RIGHT => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button_union.button_input.action_right, is_down);
+                        },
+                        zig32.VK_ESCAPE => {},
+                        zig32.VK_SPACE => {},
+                        else => {},
+                    }
+                }
+                const alt_is_down: bool = ((message.lParam & (1 << 29)) != 0);
+                if ((vk_code == zig32.VK_F4) and alt_is_down) {
+                    global_running = false;
+                }
+            },
+            else => {
+                _ = zig32.TranslateMessage(&message);
+                _ = zig32.DispatchMessageA(&message);
+            },
+        }
+    }
+}
+
+fn win32ProcessKeyboardMessage(new_state: *hm.GameButtonState, is_down: bool) void {
+    std.assert(new_state.ended_down != is_down);
+    new_state.ended_down = is_down;
+    new_state.half_transition_count += 1;
+}
+
 fn win32ProcessXInputDigitalButton(xinput_button_state: u16, old_state: *hm.GameButtonState, new_state: *hm.GameButtonState, button_bit: win.DWORD) void {
     new_state.ended_down = ((xinput_button_state & button_bit) == button_bit);
     new_state.half_transition_count = if (old_state.ended_down != new_state.ended_down) 1 else 0;
@@ -295,42 +374,6 @@ fn win32MainWindowCallBack(window: zig32.HWND, message: u32, w_param: zig32.WPAR
     var result: zig32.LRESULT = 0;
     switch (message) {
         zig32.WM_CLOSE, zig32.WM_DESTROY => global_running = false,
-        zig32.WM_KEYDOWN, zig32.WM_KEYUP, zig32.WM_SYSKEYDOWN, zig32.WM_SYSKEYUP => {
-            const vk_code: zig32.VIRTUAL_KEY = @enumFromInt(w_param);
-            const was_down: bool = ((l_param & (1 << 30)) != 0);
-            const is_down: bool = ((l_param & (1 << 31)) == 0);
-
-            if (was_down != is_down) {
-                switch (vk_code) {
-                    zig32.VK_W => {},
-                    zig32.VK_A => {},
-                    zig32.VK_S => {},
-                    zig32.VK_D => {},
-                    zig32.VK_Q => {},
-                    zig32.VK_E => {},
-                    zig32.VK_UP => {},
-                    zig32.VK_LEFT => {},
-                    zig32.VK_DOWN => {},
-                    zig32.VK_RIGHT => {},
-                    zig32.VK_ESCAPE => {
-                        std.print("escape: ", .{});
-                        if (is_down) {
-                            std.print("is_down ", .{});
-                        }
-                        if (was_down) {
-                            std.print("was_down ", .{});
-                        }
-                        std.print("\n", .{});
-                    },
-                    zig32.VK_SPACE => {},
-                    else => {},
-                }
-            }
-            const alt_is_down: bool = ((l_param & (1 << 29)) != 0);
-            if ((vk_code == zig32.VK_F4) and alt_is_down) {
-                global_running = false;
-            }
-        },
         zig32.WM_ACTIVATEAPP => {},
         zig32.WM_PAINT => {
             var paint: zig32.PAINTSTRUCT = std.zeroInit(zig32.PAINTSTRUCT, .{});
@@ -428,14 +471,23 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
                 _ = zig32.QueryPerformanceCounter(&last_counter);
                 var last_cycle_count: usize = rdtsc();
 
-                while (global_running) {
-                    var message: zig32.MSG = undefined;
+                // NOTE: <-------------------------------------------------MAIN LOOP------------------------------------------------->
 
-                    while (zig32.PeekMessageA(&message, null, 0, 0, zig32.PM_REMOVE) != 0) {
-                        if (message.message == zig32.WM_QUIT) global_running = false;
-                        _ = zig32.TranslateMessage(&message);
-                        _ = zig32.DispatchMessageA(&message);
+                // NOTE: <-------------------------------------------------MAIN LOOP------------------------------------------------->
+
+                while (global_running) {
+                    const old_keyboard_controller: *hm.GameControllerInput = hm.getController(old_input, 0);
+                    const new_keyboard_controller: *hm.GameControllerInput = hm.getController(new_input, 0);
+                    const zero_controller: hm.GameControllerInput = std.zeroInit(hm.GameControllerInput, .{});
+                    new_keyboard_controller.* = zero_controller;
+                    new_keyboard_controller.is_connected = true;
+
+                    var button_index: u32 = 0;
+                    while (button_index < new_keyboard_controller.button_union.buttons.len) : (button_index += 1) {
+                        new_keyboard_controller.button_union.buttons[button_index].ended_down = old_keyboard_controller.button_union.buttons[button_index].ended_down;
                     }
+
+                    win32ProcessPendingMessages(new_keyboard_controller);
 
                     var max_controller_count = zig32.XUSER_MAX_COUNT;
                     if (max_controller_count > new_input.controllers.len - 1) {
@@ -444,51 +496,77 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
 
                     var controller_index: win.DWORD = 0;
                     while (controller_index < max_controller_count) : (controller_index += 1) {
-                        const old_controller: *hm.GameControllerInput = &old_input.controllers[controller_index];
-                        const new_controller: *hm.GameControllerInput = &new_input.controllers[controller_index];
+                        const our_controller_index: win.DWORD = controller_index + 1;
+                        const old_controller: *hm.GameControllerInput = hm.getController(old_input, our_controller_index);
+                        const new_controller: *hm.GameControllerInput = hm.getController(new_input, our_controller_index);
 
                         var controller_state: zig32.XINPUT_STATE = std.zeroInit(zig32.XINPUT_STATE, .{});
                         if (zig32.XInputGetState(controller_index, &controller_state) == @intFromEnum(zig32.ERROR_SUCCESS)) {
+                            new_controller.is_analog = true;
+                            new_controller.is_connected = true;
+
                             const game_pad: *zig32.XINPUT_GAMEPAD = &controller_state.Gamepad;
 
-                            const up: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_UP);
-                            const down: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_DOWN);
-                            const left: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_LEFT);
-                            const right: bool = (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_RIGHT);
+                            // NOTE: Thumbstick Deadzone
+                            // left = 7849, right = 8689
 
-                            new_controller.is_analog = true;
-                            new_controller.start_x = old_controller.end_x;
-                            new_controller.start_y = old_controller.end_y;
+                            new_controller.stick_average_x = win32ProcessStickValue(game_pad.sThumbLX, zig32.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                            new_controller.stick_average_y = win32ProcessStickValue(game_pad.sThumbLY, zig32.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
 
-                            var x: f32 = 0.0;
-                            if (game_pad.sThumbLX < 0) {
-                                x = @as(f32, @floatFromInt(game_pad.sThumbLX)) / 32768.0;
-                            } else {
-                                x = @as(f32, @floatFromInt(game_pad.sThumbLX)) / 32767.0;
+                            // if ((new_controller.stick_average_x != 0.0) or (new_controller.stick_average_y != 0.0)) {
+                            //     new_controller.is_analog = true;
+                            // }
+
+                            if (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_UP) {
+                                new_controller.stick_average_y = 1.0;
+                                // new_controller.is_analog = false;
                             }
 
-                            new_controller.min_x = x;
-                            new_controller.max_x = x;
-                            new_controller.end_x = x;
-
-                            var y: f32 = 0.0;
-                            if (game_pad.sThumbLY < 0) {
-                                y = @as(f32, @floatFromInt(game_pad.sThumbLY)) / 32768.0;
-                            } else {
-                                y = @as(f32, @floatFromInt(game_pad.sThumbLY)) / 32767.0;
+                            if (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_DOWN) {
+                                new_controller.stick_average_y = -1.0;
+                                // new_controller.is_analog = false;
                             }
 
-                            new_controller.min_y = y;
-                            new_controller.max_y = y;
-                            new_controller.end_y = y;
+                            if (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_LEFT) {
+                                new_controller.stick_average_x = -1.0;
+                                // new_controller.is_analog = false;
+                            }
 
-                            const right_stick_x: i16 = game_pad.sThumbRX;
-                            const right_stick_y: i16 = game_pad.sThumbRY;
+                            if (game_pad.wButtons == zig32.XINPUT_GAMEPAD_DPAD_RIGHT) {
+                                new_controller.stick_average_x = 1.0;
+                                // new_controller.is_analog = false;
+                            }
 
-                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.down, &new_controller.button_union.button_input.down, zig32.XINPUT_GAMEPAD_A);
-                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.up, &new_controller.button_union.button_input.up, zig32.XINPUT_GAMEPAD_Y);
-                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.left, &new_controller.button_union.button_input.left, zig32.XINPUT_GAMEPAD_X);
-                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.right, &new_controller.button_union.button_input.right, zig32.XINPUT_GAMEPAD_B);
+                            const threshold: f32 = 0.5;
+                            win32ProcessXInputDigitalButton(
+                                if (new_controller.stick_average_x < -threshold) 1 else 0,
+                                &old_controller.button_union.button_input.move_left,
+                                &new_controller.button_union.button_input.move_left,
+                                1,
+                            );
+                            win32ProcessXInputDigitalButton(
+                                if (new_controller.stick_average_x < threshold) 1 else 0,
+                                &old_controller.button_union.button_input.move_right,
+                                &new_controller.button_union.button_input.move_right,
+                                1,
+                            );
+                            win32ProcessXInputDigitalButton(
+                                if (new_controller.stick_average_y < -threshold) 1 else 0,
+                                &old_controller.button_union.button_input.move_down,
+                                &new_controller.button_union.button_input.move_down,
+                                1,
+                            );
+                            win32ProcessXInputDigitalButton(
+                                if (new_controller.stick_average_y < threshold) 1 else 0,
+                                &old_controller.button_union.button_input.move_up,
+                                &new_controller.button_union.button_input.move_up,
+                                1,
+                            );
+
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.action_down, &new_controller.button_union.button_input.action_down, zig32.XINPUT_GAMEPAD_A);
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.action_up, &new_controller.button_union.button_input.action_up, zig32.XINPUT_GAMEPAD_Y);
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.action_left, &new_controller.button_union.button_input.action_left, zig32.XINPUT_GAMEPAD_X);
+                            win32ProcessXInputDigitalButton(game_pad.wButtons, &old_controller.button_union.button_input.action_right, &new_controller.button_union.button_input.action_right, zig32.XINPUT_GAMEPAD_B);
 
                             win32ProcessXInputDigitalButton(
                                 game_pad.wButtons,
@@ -503,15 +581,14 @@ pub fn wWinMain(instance: zig32.HINSTANCE, prev_instance: ?zig32.HINSTANCE, cmd_
                                 zig32.XINPUT_GAMEPAD_RIGHT_SHOULDER,
                             );
 
-                            _ = up;
-                            _ = down;
-                            _ = left;
-                            _ = right;
+                            const right_stick_x: i16 = game_pad.sThumbRX;
+                            const right_stick_y: i16 = game_pad.sThumbRY;
 
                             _ = right_stick_x;
                             _ = right_stick_y;
                         } else {
                             // The controller is unavailable
+                            new_controller.is_connected = false;
                         }
                     }
 

@@ -39,28 +39,32 @@ pub const GameButtonState = extern struct {
 
 pub const GameControllerInput = extern struct {
     is_analog: bool,
+    is_connected: bool,
 
-    start_x: f32,
-    start_y: f32,
-
-    min_x: f32,
-    min_y: f32,
-
-    max_x: f32,
-    max_y: f32,
-
-    end_x: f32,
-    end_y: f32,
+    stick_average_x: f32,
+    stick_average_y: f32,
 
     button_union: extern union {
-        buttons: [6]GameButtonState,
+        buttons: [12]GameButtonState,
         button_input: extern struct {
-            up: GameButtonState,
-            down: GameButtonState,
-            left: GameButtonState,
-            right: GameButtonState,
+            action_up: GameButtonState,
+            action_down: GameButtonState,
+            action_left: GameButtonState,
+            action_right: GameButtonState,
+
+            move_up: GameButtonState,
+            move_down: GameButtonState,
+            move_left: GameButtonState,
+            move_right: GameButtonState,
+
             left_shoulder: GameButtonState,
             right_shoulder: GameButtonState,
+
+            back: GameButtonState,
+            start: GameButtonState,
+
+            // NOTE: All buttons must be added above this line
+            terminator: GameButtonState,
         },
     },
 };
@@ -79,7 +83,7 @@ const GameState = struct {
     green_offset: i32,
 };
 
-pub const GameInput = struct { controllers: [4]GameControllerInput };
+pub const GameInput = struct { controllers: [5]GameControllerInput };
 
 const pi: f32 = 3.14159265359;
 var t_sine: f32 = 0.0;
@@ -98,6 +102,13 @@ pub fn gigabytes(value: u64) u64 {
 
 pub fn terabytes(value: u64) u64 {
     return value * std.pow(u64, 1024, 4);
+}
+
+pub inline fn getController(input: *GameInput, controller_index: u32) *GameControllerInput {
+    std.assert(controller_index < input.controllers.len);
+
+    const result: *GameControllerInput = &input.controllers[controller_index];
+    return result;
 }
 
 fn gameOutputSound(sound_buffer: *GameOutputSoundBuffer, tone_hz: i32) void {
@@ -142,6 +153,7 @@ fn renderWeirdGradient(buffer: *GameOffscreenBuffer, blue_offset: i32, green_off
 }
 
 pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *GameOffscreenBuffer, sound_buffer: *GameOutputSoundBuffer) void {
+    std.assert((&input.controllers[0].button_union.button_input.terminator - &input.controllers[0].button_union.buttons[0]) == input.controllers[0].button_union.buttons.len);
     std.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
 
     var game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
@@ -163,18 +175,28 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *Game
         memory.is_initialized = true;
     }
 
-    const input0: *GameControllerInput = &input.controllers[0];
+    var controller_index: u32 = 0;
+    while (controller_index < input.controllers.len) : (controller_index += 1) {
+        const controller: *GameControllerInput = getController(input, controller_index);
 
-    if (input0.is_analog) {
-        // analog movement
-        game_state.blue_offset += @intFromFloat(4.0 * input0.end_x);
-        game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.end_y));
-    } else {
-        // digital movement
-    }
+        if (controller.is_analog) {
+            // analog movement
+            game_state.blue_offset += @intFromFloat(4.0 * controller.stick_average_x);
+            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
+        } else {
+            // digital movement
+            if (controller.button_union.button_input.move_left.ended_down) {
+                game_state.blue_offset -= 1;
+            }
 
-    if (input0.button_union.button_input.down.ended_down) {
-        game_state.green_offset += 1;
+            if (controller.button_union.button_input.move_right.ended_down) {
+                game_state.blue_offset += 1;
+            }
+        }
+
+        if (controller.button_union.button_input.action_down.ended_down) {
+            game_state.green_offset += 1;
+        }
     }
 
     gameOutputSound(sound_buffer, game_state.tone_hz);
