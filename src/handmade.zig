@@ -26,7 +26,7 @@ const Color = packed struct(u32) {
     _: u8 = 0,
 };
 
-pub const GameOutputSoundBuffer = struct {
+pub const GameSoundOutputBuffer = struct {
     samples_per_second: u32,
     sample_count: u32,
     samples: *i16,
@@ -111,7 +111,7 @@ pub inline fn getController(input: *GameInput, controller_index: u32) *GameContr
     return result;
 }
 
-fn gameOutputSound(sound_buffer: *GameOutputSoundBuffer, tone_hz: i32) void {
+fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const tone_volume: i16 = 2000;
     const wave_period: i32 = @intCast(@divTrunc(@as(i32, @intCast(sound_buffer.samples_per_second)), tone_hz));
     var sample_out: [*]i16 = @ptrCast(sound_buffer.samples);
@@ -126,6 +126,7 @@ fn gameOutputSound(sound_buffer: *GameOutputSoundBuffer, tone_hz: i32) void {
         sample_out += 1;
 
         t_sine += 2.0 * pi * 1.0 / @as(f32, @floatFromInt(wave_period));
+        if (t_sine > 2.0 * pi) t_sine -= 2.0 * pi;
     }
 }
 
@@ -152,23 +153,25 @@ fn renderWeirdGradient(buffer: *GameOffscreenBuffer, blue_offset: i32, green_off
     }
 }
 
-pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *GameOffscreenBuffer, sound_buffer: *GameOutputSoundBuffer) void {
+pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *GameOffscreenBuffer) void {
     std.assert((&input.controllers[0].button_union.button_input.terminator - &input.controllers[0].button_union.buttons[0]) == input.controllers[0].button_union.buttons.len);
     std.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
 
     var game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
 
     if (!memory.is_initialized) {
-        const file_name: ?[*:0]const u8 = "C:/Users/SkyeFox/code/learning/handmade_hero/assets/test.txt";
+        if (dbg) {
+            const file_name: ?[*:0]const u8 = "C:/Users/SkyeFox/code/learning/handmade_hero/assets/test.txt";
 
-        const file: DEBUGPlatformReadFileResult = if (dbg) DEBUGPlatformReadEntireFile(file_name) else null;
+            const file: DEBUGPlatformReadFileResult = DEBUGPlatformReadEntireFile(file_name);
 
-        if (file.contents) |_| {
-            _ = DEBUGPlatformWriteEntireFile("C:/Users/SkyeFox/code/learning/handmade_hero/assets/test2.txt", file.contents_size, file.contents);
-            DEBUGPlatformFreeFileMemory(file.contents);
+            if (file.contents) |_| {
+                _ = DEBUGPlatformWriteEntireFile("C:/Users/SkyeFox/code/learning/handmade_hero/assets/test2.txt", file.contents_size, file.contents);
+                DEBUGPlatformFreeFileMemory(file.contents);
+            }
         }
 
-        game_state.tone_hz = 256;
+        game_state.tone_hz = 512;
         game_state.blue_offset = 0;
         game_state.green_offset = 0;
 
@@ -181,24 +184,28 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, buffer: *Game
 
         if (controller.is_analog) {
             // analog movement
-            game_state.blue_offset += @intFromFloat(4.0 * controller.stick_average_x);
-            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
+            game_state.blue_offset += @intFromFloat(10.0 * controller.stick_average_x);
+            game_state.tone_hz = 512 + @as(i32, @intFromFloat(128.0 * controller.stick_average_y));
         } else {
             // digital movement
             if (controller.button_union.button_input.move_left.ended_down) {
-                game_state.blue_offset -= 1;
+                game_state.blue_offset -= 16;
             }
 
             if (controller.button_union.button_input.move_right.ended_down) {
-                game_state.blue_offset += 1;
+                game_state.blue_offset += 16;
             }
         }
 
         if (controller.button_union.button_input.action_down.ended_down) {
-            game_state.green_offset += 1;
+            game_state.green_offset += 16;
         }
     }
 
-    gameOutputSound(sound_buffer, game_state.tone_hz);
     renderWeirdGradient(buffer, game_state.blue_offset, game_state.green_offset);
+}
+
+pub fn gameGetSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
+    const game_state: *GameState = @alignCast(@ptrCast(memory.permanent_storage));
+    gameOutputSound(sound_buffer, game_state.tone_hz);
 }
