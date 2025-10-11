@@ -1,0 +1,14 @@
+const std = @import("std");
+const builtin = @import("builtin");
+
+const platform =
+    // Linux
+    if (builtin.os.tag == .linux) @import("wayland_handmade.zig")
+    // Windows
+    else if (builtin.os.tag == .windows) @import("win32_handmade.zig")
+    // Unsupported
+    else @compileError("Unsupported OS");
+
+pub fn main() !void {
+    if (builtin.os.tag == .linux) try platform.run();
+}
