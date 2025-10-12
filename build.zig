@@ -17,29 +17,28 @@ pub fn build(b: *std.Build) void {
 
     exe.linkLibC();
 
-    // Create Wayland scanner
-    const scanner = Scanner.create(b, .{});
-    const wayland_module = b.createModule(.{
-        .root_source_file = scanner.result,
-    });
-
-    // Add required Wayland protocols
-    scanner.addSystemProtocol("stable/xdg-shell/xdg-shell.xml");
-
-    // Generate bindings for needed interfaces
-    scanner.generate("wl_compositor", 4);
-    scanner.generate("wl_shm", 1);
-    scanner.generate("xdg_wm_base", 1);
-    scanner.generate("wl_seat", 9);
-    scanner.generate("wl_output", 4);
-
-    exe.root_module.addImport("wayland", wayland_module);
-
     const zigwin32 = b.dependency("zigwin32", .{});
     const zigwin32_module = zigwin32.module("win32");
     exe.root_module.addImport("zigwin32", zigwin32_module);
 
     if (exe.root_module.resolved_target.?.result.os.tag == .linux) {
+        // Create Wayland scanner
+        const scanner = Scanner.create(b, .{});
+        const wayland_module = b.createModule(.{
+            .root_source_file = scanner.result,
+        });
+
+        // Add required Wayland protocols
+        scanner.addSystemProtocol("stable/xdg-shell/xdg-shell.xml");
+
+        // Generate bindings for needed interfaces
+        scanner.generate("wl_compositor", 4);
+        scanner.generate("wl_shm", 1);
+        scanner.generate("xdg_wm_base", 1);
+        scanner.generate("wl_seat", 9);
+        scanner.generate("wl_output", 4);
+
+        exe.root_module.addImport("wayland", wayland_module);
         exe.root_module.linkSystemLibrary("wayland-client", .{});
     }
 
