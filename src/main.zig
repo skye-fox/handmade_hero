@@ -10,5 +10,5 @@ const platform =
     else @compileError("Unsupported OS");
 
 pub fn main() !void {
-    if (builtin.os.tag == .linux) try platform.run();
+    try platform.run();
 }
