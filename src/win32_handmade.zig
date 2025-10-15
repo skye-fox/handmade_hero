@@ -6,6 +6,7 @@ const foundation = @import("zigwin32").foundation;
 const gdi = @import("zigwin32").graphics.gdi;
 const zig32_mem = @import("zigwin32").system.memory;
 const wam = @import("zigwin32").ui.windows_and_messaging;
+const controller = @import("zigwin32").ui.input.xbox_controller;
 
 const Color = packed struct(u32) {
     // NOTE: Pixels are always 32 bits wide, windows memory order BB GG RR XX
@@ -149,8 +150,8 @@ pub fn run() !void {
         if (window_handle) |window| {
             const device_context = gdi.GetDC(window);
 
-            var blue_offset: u32 = 0;
-            var green_offset: u32 = 0;
+            var x_offset: u32 = 0;
+            var y_offset: u32 = 0;
 
             global_running = true;
             while (global_running) {
@@ -162,13 +163,69 @@ pub fn run() !void {
                     _ = wam.TranslateMessage(&message);
                     _ = wam.DispatchMessageA(&message);
                 }
-                win32RenderWierdGradient(global_back_buffer, blue_offset, green_offset);
+
+                var controller_index: win.DWORD = 0;
+                while (controller_index < controller.XUSER_MAX_COUNT) : (controller_index += 1) {
+                    var controller_state = std.mem.zeroInit(controller.XINPUT_STATE, .{});
+
+                    if (controller.XInputGetState(controller_index, &controller_state) == @intFromEnum(foundation.ERROR_SUCCESS)) {
+                        // Controller available
+                        const pad = &controller_state.Gamepad;
+
+                        const pad_up: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_UP) true else false;
+                        const pad_down: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_DOWN) true else false;
+                        const pad_left: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_LEFT) true else false;
+                        const pad_right: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_RIGHT) true else false;
+
+                        const pad_start: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_START) true else false;
+                        const pad_back: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_BACK) true else false;
+
+                        const pad_left_shoulder: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_LEFT_SHOULDER) true else false;
+                        const pad_right_shoulder: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_RIGHT_SHOULDER) true else false;
+
+                        const pad_A: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_A) true else false;
+                        const pad_B: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_B) true else false;
+                        const pad_X: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_X) true else false;
+                        const pad_Y: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_Y) true else false;
+
+                        const left_stick_x = pad.sThumbLX;
+                        const left_stick_y = pad.sThumbLY;
+                        const right_stick_x = pad.sThumbRX;
+                        const right_stick_y = pad.sThumbRY;
+
+                        _ = pad_up;
+                        _ = pad_down;
+                        _ = pad_left;
+                        _ = pad_right;
+
+                        _ = pad_start;
+                        _ = pad_back;
+
+                        _ = pad_right_shoulder;
+                        _ = pad_left_shoulder;
+
+                        if (pad_A) {
+                            y_offset += 1;
+                        }
+                        _ = pad_B;
+                        _ = pad_X;
+                        _ = pad_Y;
+
+                        _ = left_stick_x;
+                        _ = left_stick_y;
+                        _ = right_stick_x;
+                        _ = right_stick_y;
+                    } else {
+                        // Controller not available
+                    }
+                }
+
+                win32RenderWierdGradient(global_back_buffer, x_offset, y_offset);
 
                 const dimension = win32GetWindowDimension(window);
                 win32DisplayBufferInWindow(device_context.?, dimension.width, dimension.height, global_back_buffer);
 
-                blue_offset += 1;
-                green_offset += 1;
+                x_offset += 1;
             }
         } else {
             // TODO: Logging
