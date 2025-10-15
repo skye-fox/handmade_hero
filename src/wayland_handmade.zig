@@ -4,7 +4,7 @@ const wayland = @import("wayland");
 const wl = wayland.client.wl;
 const xdg = wayland.client.xdg;
 
-const Context = struct {
+const WlContext = struct {
     shm: ?*wl.Shm,
     compositor: ?*wl.Compositor,
     wm_base: ?*xdg.WmBase,
@@ -14,26 +14,61 @@ const Context = struct {
     running: bool = true,
 };
 
-fn createBuffer(shm: *wl.Shm, width: u32, height: u32) !*wl.Buffer {
-    const stride = width * 4;
-    const size = stride * height;
+const WlColor = packed struct(u32) {
+    blue: u8,
+    green: u8,
+    red: u8,
+    alpha: u8 = 255,
+};
+
+const WlOffscreenBuffer = struct {
+    buffer: ?*wl.Buffer,
+    memory: []u8,
+    width: u32,
+    height: u32,
+    stride: u32,
+};
+
+var global_back_buffer = std.mem.zeroInit(WlOffscreenBuffer, .{});
+
+fn wlRenderWierdGradient(buffer: *WlOffscreenBuffer, blue_offset: u32, green_offset: u32) void {
+    var row: [*]u8 = @ptrCast(buffer.memory);
+
+    var y: u32 = 0;
+    while (y < buffer.height) : (y += 1) {
+        var pixel: [*]WlColor = @ptrCast(@alignCast(row));
+        var x: u32 = 0;
+        while (x < buffer.width) : (x += 1) {
+            pixel[0] = .{ .blue = @truncate(x +% blue_offset), .green = @truncate(y +% green_offset), .red = @truncate(0) };
+            pixel += 1;
+        }
+        row += @intCast(buffer.stride);
+    }
+
+    // const data_u32: [*]u32 = @ptrCast(@alignCast(data));
+    // for (0..width * height) |i| {
+    //     data_u32[i] = 0xFF8B5CF6;
+    // }
+
+}
+
+fn WlCreateBuffer(buffer: *WlOffscreenBuffer, shm: *wl.Shm, width: u32, height: u32) !void {
+    buffer.width = width;
+    buffer.height = height;
+    buffer.stride = width * 4;
+    const size = buffer.stride * height;
     const fd = try std.posix.memfd_create("handmade_hero", 0);
     try std.posix.ftruncate(fd, size);
 
-    const data = try std.posix.mmap(null, size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
-
-    const data_u32: [*]u32 = @ptrCast(@alignCast(data));
-    for (0..width * height) |i| {
-        data_u32[i] = 0xFF8B5CF6;
-    }
+    buffer.memory = try std.posix.mmap(null, size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
 
     const pool = try shm.createPool(fd, @intCast(size));
     defer pool.destroy();
 
-    return try pool.createBuffer(0, @intCast(width), @intCast(height), @intCast(stride), wl.Shm.Format.argb8888);
+    buffer.buffer = try pool.createBuffer(0, @intCast(width), @intCast(height), @intCast(buffer.stride), wl.Shm.Format.argb8888);
 }
 
-fn registryListener(registry: *wl.Registry, event: wl.Registry.Event, context: *Context) void {
+fn wlRegistryListener(registry: *wl.Registry, event: wl.Registry.Event, context: *WlContext) void {
     switch (event) {
         .global => |global| {
             if (std.mem.orderZ(u8, global.interface, wl.Compositor.interface.name) == .eq) {
@@ -57,7 +92,7 @@ fn registryListener(registry: *wl.Registry, event: wl.Registry.Event, context: *
     }
 }
 
-fn xdgSurfaceListener(xdg_surface: *xdg.Surface, event: xdg.Surface.Event, context: *Context) void {
+fn wlXDGSurfaceListener(xdg_surface: *xdg.Surface, event: xdg.Surface.Event, context: *WlContext) void {
     switch (event) {
         .configure => |configure| {
             xdg_surface.ackConfigure(configure.serial);
@@ -66,7 +101,7 @@ fn xdgSurfaceListener(xdg_surface: *xdg.Surface, event: xdg.Surface.Event, conte
     }
 }
 
-fn xdgToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, context: *Context) void {
+fn wlXDGToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, context: *WlContext) void {
     switch (event) {
         .configure => |configure| {
             if (configure.width > 0 and configure.height > 0) {
@@ -78,7 +113,7 @@ fn xdgToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, context: *Co
     }
 }
 
-fn wmBaseListener(_: *xdg.WmBase, event: xdg.WmBase.Event, wm_base: *xdg.WmBase) void {
+fn wlWMBaseListener(_: *xdg.WmBase, event: xdg.WmBase.Event, wm_base: *xdg.WmBase) void {
     switch (event) {
         .ping => |ping| {
             wm_base.pong(ping.serial);
@@ -93,13 +128,13 @@ pub fn run() !void {
     const registry = try wl.Display.getRegistry(display);
     defer registry.destroy();
 
-    var context = Context{
+    var context = WlContext{
         .shm = null,
         .compositor = null,
         .wm_base = null,
     };
 
-    registry.setListener(*Context, registryListener, &context);
+    registry.setListener(*WlContext, wlRegistryListener, &context);
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
     std.debug.print("Connection established!\n", .{});
 
@@ -114,9 +149,9 @@ pub fn run() !void {
     const xdg_toplevel = try xdg_surface.getToplevel();
     defer xdg_toplevel.destroy();
 
-    xdg_surface.setListener(*Context, xdgSurfaceListener, &context);
-    xdg_toplevel.setListener(*Context, xdgToplevelListener, &context);
-    wm_base.setListener(*xdg.WmBase, wmBaseListener, wm_base);
+    xdg_surface.setListener(*WlContext, wlXDGSurfaceListener, &context);
+    xdg_toplevel.setListener(*WlContext, wlXDGToplevelListener, &context);
+    wm_base.setListener(*xdg.WmBase, wlWMBaseListener, wm_base);
 
     surface.commit();
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
@@ -127,13 +162,17 @@ pub fn run() !void {
 
     if (!context.running) return;
 
-    const buffer = try createBuffer(shm, context.width, context.height);
-    defer buffer.destroy();
+    try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
+    defer global_back_buffer.buffer.?.destroy();
 
-    surface.attach(buffer, 0, 0);
-    surface.commit();
-
+    var blue_offset: u32 = 0;
+    var green_offset: u32 = 0;
     while (context.running) {
+        wlRenderWierdGradient(&global_back_buffer, blue_offset, green_offset);
+        surface.attach(global_back_buffer.buffer, 0, 0);
+        surface.commit();
         if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+        blue_offset += 1;
+        green_offset += 1;
     }
 }
