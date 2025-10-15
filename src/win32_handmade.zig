@@ -7,60 +7,94 @@ const gdi = @import("zigwin32").graphics.gdi;
 const zig32_mem = @import("zigwin32").system.memory;
 const wam = @import("zigwin32").ui.windows_and_messaging;
 
-var instance: foundation.HINSTANCE = undefined;
-
-var bitmap_info = std.mem.zeroInit(gdi.BITMAPINFO, .{});
-var bitmap_memory: ?*anyopaque = undefined;
-var bitmap_width: i32 = 0;
-var bitmap_height: i32 = 0;
-
-var running = false;
-
 const Color = packed struct(u32) {
+    // NOTE: Pixels are always 32 bits wide, windows memory order BB GG RR XX
     blue: u8,
     green: u8,
     red: u8,
-    pad: u8,
+    pad: u8 = 0,
 };
 
-fn win32ResizeDIBSection(width: i32, height: i32) void {
-    if (bitmap_memory) |memory| {
+const Win32OffscreenBuffer = struct {
+    info: gdi.BITMAPINFO,
+    memory: ?*anyopaque,
+    width: i32,
+    height: i32,
+    pitch: i32,
+};
+
+const Win32WindowDimension = struct {
+    width: i32,
+    height: i32,
+};
+
+var instance: foundation.HINSTANCE = undefined;
+
+var global_running = false;
+
+var global_back_buffer = std.mem.zeroInit(Win32OffscreenBuffer, .{});
+
+fn win32GetWindowDimension(window: foundation.HWND) Win32WindowDimension {
+    var client_rect: foundation.RECT = undefined;
+    _ = wam.GetClientRect(window, &client_rect);
+
+    const result = Win32WindowDimension{
+        .width = client_rect.right - client_rect.left,
+        .height = client_rect.bottom - client_rect.top,
+    };
+    return result;
+}
+
+fn win32RenderWierdGradient(buffer: Win32OffscreenBuffer, blue_offset: u32, green_offset: u32) void {
+    var row = @as([*]u8, @ptrCast(buffer.memory));
+
+    var y: u32 = 0;
+    while (y < buffer.height) : (y += 1) {
+        var pixel: [*]Color = @ptrCast(@alignCast(row));
+        var x: u32 = 0;
+        while (x < buffer.width) : (x += 1) {
+            pixel[0] = .{ .blue = @truncate(x + blue_offset), .green = @truncate(y + green_offset), .red = @truncate(0) };
+            pixel += 1;
+        }
+        row += @intCast(buffer.pitch);
+    }
+
+    //     Make a solid bg color
+    //
+    //     var pixel: [*]Color = buffer.memory;
+    // const width: u32 = @intCast(buffer.width);
+    // const height: u32 = @intCast(buffer.height);
+    // var pixel: [*]Color = @ptrCast(@alignCast(buffer.memory));
+    // for (0..width * height) |i| {
+    //     pixel[i] = .{ .blue = 246, .green = 92, .red = 139 };
+    // }
+}
+
+fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32) void {
+    if (buffer.memory) |memory| {
         _ = zig32_mem.VirtualFree(memory, 0, zig32_mem.MEM_RELEASE);
     }
 
-    bitmap_width = width;
-    bitmap_height = height;
+    buffer.width = width;
+    buffer.height = height;
 
-    bitmap_info.bmiHeader.biSize = @sizeOf(@TypeOf(bitmap_info.bmiHeader));
-    bitmap_info.bmiHeader.biWidth = bitmap_width;
-    bitmap_info.bmiHeader.biHeight = bitmap_height;
-    bitmap_info.bmiHeader.biPlanes = 1;
-    bitmap_info.bmiHeader.biBitCount = 32;
-    bitmap_info.bmiHeader.biCompression = gdi.BI_RGB;
+    buffer.info.bmiHeader.biSize = @sizeOf(@TypeOf(buffer.info.bmiHeader));
+    buffer.info.bmiHeader.biWidth = buffer.width;
+    buffer.info.bmiHeader.biHeight = -buffer.height;
+    buffer.info.bmiHeader.biPlanes = 1;
+    buffer.info.bmiHeader.biBitCount = 32;
+    buffer.info.bmiHeader.biCompression = gdi.BI_RGB;
 
-    const bytes_per_pixel: i32 = 4;
-    const bitmap_memory_size = (bitmap_width * bitmap_height) * bytes_per_pixel;
-    bitmap_memory = zig32_mem.VirtualAlloc(null, @as(usize, @intCast(bitmap_memory_size)), zig32_mem.MEM_COMMIT, zig32_mem.PAGE_READWRITE);
+    const bytes_per_pixel = 4;
 
-    const pitch = width * bytes_per_pixel;
-    var row = @as([*]u8, @ptrCast(bitmap_memory));
+    const bitmap_memory_size = (buffer.width * buffer.height) * bytes_per_pixel;
+    buffer.memory = zig32_mem.VirtualAlloc(null, @as(usize, @intCast(bitmap_memory_size)), zig32_mem.MEM_COMMIT, zig32_mem.PAGE_READWRITE);
 
-    var y: i32 = 0;
-    while (y < bitmap_height) : (y += 1) {
-        var pixel: [*]Color = @ptrCast(@alignCast(row));
-        var x: i32 = 0;
-        while (x < bitmap_width) : (x += 1) {
-            pixel[0] = .{ .red = 0, .green = @as(u8, @intCast(y)), .blue = @as(u8, @intCast(x)), .pad = 0 };
-            pixel += 1;
-        }
-        row += @intCast(pitch);
-    }
+    buffer.pitch = buffer.width * bytes_per_pixel;
 }
 
-fn win32UpdateWindow(device_context: gdi.HDC, window_rect: foundation.RECT) void {
-    const window_width = window_rect.right - window_rect.left;
-    const window_height = window_rect.bottom - window_rect.top;
-    _ = gdi.StretchDIBits(device_context, 0, 0, bitmap_width, bitmap_height, 0, 0, window_width, window_height, bitmap_memory, &bitmap_info, gdi.DIB_RGB_COLORS, gdi.SRCCOPY);
+fn win32DisplayBufferInWindow(device_context: gdi.HDC, window_width: i32, window_height: i32, buffer: Win32OffscreenBuffer) void {
+    _ = gdi.StretchDIBits(device_context, 0, 0, window_width, window_height, 0, 0, buffer.width, buffer.height, buffer.memory, &buffer.info, gdi.DIB_RGB_COLORS, gdi.SRCCOPY);
 }
 
 fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: foundation.WPARAM, lparam: foundation.LPARAM) callconv(.c) foundation.LRESULT {
@@ -69,23 +103,15 @@ fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: f
         wam.WM_ACTIVATEAPP => {
             std.debug.print("WM_ACTIVATEAPP\n", .{});
         },
-        wam.WM_CLOSE, wam.WM_DESTROY => running = false,
+        wam.WM_CLOSE, wam.WM_DESTROY => global_running = false,
         wam.WM_PAINT => {
             var paint: gdi.PAINTSTRUCT = undefined;
             const device_context = gdi.BeginPaint(window, &paint);
 
-            var client_rect: foundation.RECT = undefined;
-            _ = wam.GetClientRect(window, &client_rect);
+            const dimension = win32GetWindowDimension(window);
 
-            win32UpdateWindow(device_context.?, client_rect);
+            win32DisplayBufferInWindow(device_context.?, dimension.width, dimension.height, global_back_buffer);
             _ = gdi.EndPaint(window, &paint);
-        },
-        wam.WM_SIZE => {
-            var client_rect: foundation.RECT = undefined;
-            _ = wam.GetClientRect(window, &client_rect);
-            const width = client_rect.right - client_rect.left;
-            const height = client_rect.bottom - client_rect.top;
-            win32ResizeDIBSection(width, height);
         },
         else => {
             result = wam.DefWindowProcA(window, message, wparam, lparam);
@@ -95,6 +121,8 @@ fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: f
 }
 
 pub fn run() !void {
+    win32ResizeDIBSection(&global_back_buffer, 1280, 720);
+
     var window_class = std.mem.zeroInit(wam.WNDCLASSA, .{});
 
     window_class.style = .{ .HREDRAW = 1, .VREDRAW = 1, .OWNDC = 1 };
@@ -118,15 +146,29 @@ pub fn run() !void {
             null,
         );
 
-        if (window_handle) |_| {
-            running = true;
-            while (running) {
+        if (window_handle) |window| {
+            const device_context = gdi.GetDC(window);
+
+            var blue_offset: u32 = 0;
+            var green_offset: u32 = 0;
+
+            global_running = true;
+            while (global_running) {
                 var message: wam.MSG = undefined;
-                const message_result = wam.GetMessageA(&message, null, 0, 0);
-                if (message_result > 0) {
+                while (wam.PeekMessageA(&message, null, 0, 0, wam.PM_REMOVE) != 0) {
+                    if (message.message == wam.WM_QUIT) {
+                        global_running = false;
+                    }
                     _ = wam.TranslateMessage(&message);
                     _ = wam.DispatchMessageA(&message);
                 }
+                win32RenderWierdGradient(global_back_buffer, blue_offset, green_offset);
+
+                const dimension = win32GetWindowDimension(window);
+                win32DisplayBufferInWindow(device_context.?, dimension.width, dimension.height, global_back_buffer);
+
+                blue_offset += 1;
+                green_offset += 1;
             }
         } else {
             // TODO: Logging
