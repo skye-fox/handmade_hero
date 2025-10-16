@@ -2,11 +2,12 @@ const std = @import("std");
 const win = @import("std").os.windows;
 
 const zig32 = @import("zigwin32");
+const controller = @import("zigwin32").ui.input.xbox_controller;
+const kbam = @import("zigwin32").ui.input.keyboard_and_mouse;
 const foundation = @import("zigwin32").foundation;
 const gdi = @import("zigwin32").graphics.gdi;
-const zig32_mem = @import("zigwin32").system.memory;
 const wam = @import("zigwin32").ui.windows_and_messaging;
-const controller = @import("zigwin32").ui.input.xbox_controller;
+const zig32_mem = @import("zigwin32").system.memory;
 
 const Color = packed struct(u32) {
     // NOTE: Pixels are always 32 bits wide, windows memory order BB GG RR XX
@@ -46,7 +47,7 @@ fn win32GetWindowDimension(window: foundation.HWND) Win32WindowDimension {
     return result;
 }
 
-fn win32RenderWierdGradient(buffer: Win32OffscreenBuffer, blue_offset: u32, green_offset: u32) void {
+fn win32RenderWierdGradient(buffer: *Win32OffscreenBuffer, blue_offset: u32, green_offset: u32) void {
     var row = @as([*]u8, @ptrCast(buffer.memory));
 
     var y: u32 = 0;
@@ -94,7 +95,7 @@ fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32)
     buffer.pitch = buffer.width * bytes_per_pixel;
 }
 
-fn win32DisplayBufferInWindow(device_context: gdi.HDC, window_width: i32, window_height: i32, buffer: Win32OffscreenBuffer) void {
+fn win32DisplayBufferInWindow(buffer: *Win32OffscreenBuffer, device_context: gdi.HDC, window_width: i32, window_height: i32) void {
     _ = gdi.StretchDIBits(device_context, 0, 0, window_width, window_height, 0, 0, buffer.width, buffer.height, buffer.memory, &buffer.info, gdi.DIB_RGB_COLORS, gdi.SRCCOPY);
 }
 
@@ -105,13 +106,49 @@ fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: f
             std.debug.print("WM_ACTIVATEAPP\n", .{});
         },
         wam.WM_CLOSE, wam.WM_DESTROY => global_running = false,
+        wam.WM_KEYDOWN, wam.WM_KEYUP, wam.WM_SYSKEYDOWN, wam.WM_SYSKEYUP => {
+            const vk_code: kbam.VIRTUAL_KEY = @enumFromInt(wparam);
+            const was_down: bool = ((lparam & (1 << 30)) != 0);
+            const is_down: bool = ((lparam & (1 << 31)) == 0);
+
+            if (was_down != is_down) {
+                switch (vk_code) {
+                    .W => {},
+                    .A => {},
+                    .S => {},
+                    .D => {},
+                    .Q => {},
+                    .E => {},
+                    .UP => {},
+                    .LEFT => {},
+                    .DOWN => {},
+                    .RIGHT => {},
+                    .SPACE => {},
+                    .ESCAPE => {
+                        std.debug.print("Escape: ", .{});
+                        if (is_down) {
+                            std.debug.print("is_down ", .{});
+                        }
+                        if (was_down) {
+                            std.debug.print("was_down ", .{});
+                        }
+                        std.debug.print("\n", .{});
+                    },
+                    else => {},
+                }
+            }
+            const alt_down: bool = ((lparam & (1 << 29)) != 0);
+            if ((vk_code == kbam.VK_F4) and alt_down) {
+                global_running = false;
+            }
+        },
         wam.WM_PAINT => {
             var paint: gdi.PAINTSTRUCT = undefined;
             const device_context = gdi.BeginPaint(window, &paint);
 
             const dimension = win32GetWindowDimension(window);
 
-            win32DisplayBufferInWindow(device_context.?, dimension.width, dimension.height, global_back_buffer);
+            win32DisplayBufferInWindow(&global_back_buffer, device_context.?, dimension.width, dimension.height);
             _ = gdi.EndPaint(window, &paint);
         },
         else => {
@@ -190,6 +227,10 @@ pub fn run() !void {
 
                         const left_stick_x = pad.sThumbLX;
                         const left_stick_y = pad.sThumbLY;
+
+                        x_offset += @abs(left_stick_x >> 12);
+                        y_offset += @abs(left_stick_y >> 12);
+
                         const right_stick_x = pad.sThumbRX;
                         const right_stick_y = pad.sThumbRY;
 
@@ -211,8 +252,8 @@ pub fn run() !void {
                         _ = pad_X;
                         _ = pad_Y;
 
-                        _ = left_stick_x;
-                        _ = left_stick_y;
+                        // _ = left_stick_x;
+                        // _ = left_stick_y;
                         _ = right_stick_x;
                         _ = right_stick_y;
                     } else {
@@ -220,12 +261,17 @@ pub fn run() !void {
                     }
                 }
 
-                win32RenderWierdGradient(global_back_buffer, x_offset, y_offset);
+                // NOTE: Example of how to do XInput vibration
+
+                // var vibration = std.mem.zeroInit(controller.XINPUT_VIBRATION, .{});
+                // vibration.wLeftMotorSpeed = 60000;
+                // vibration.wRightMotorSpeed = 60000;
+                // _ = controller.XInputSetState(0, &vibration);
+
+                win32RenderWierdGradient(&global_back_buffer, x_offset, y_offset);
 
                 const dimension = win32GetWindowDimension(window);
-                win32DisplayBufferInWindow(device_context.?, dimension.width, dimension.height, global_back_buffer);
-
-                x_offset += 1;
+                win32DisplayBufferInWindow(&global_back_buffer, device_context.?, dimension.width, dimension.height);
             }
         } else {
             // TODO: Logging
