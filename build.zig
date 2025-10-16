@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
 
     const zigwin32 = b.dependency("zigwin32", .{});
     const zigwin32_module = zigwin32.module("win32");
-    exe.root_module.addImport("zigwin32", zigwin32_module);
+    exe.root_module.addImport("zigwin32", zigwin32_module); // update: zig fetch --save "git+https://github.com/marlersoft/zigwin32#main"
 
     if (exe.root_module.resolved_target.?.result.os.tag == .linux) {
         // Create Wayland scanner
@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
         scanner.generate("wl_seat", 9);
         scanner.generate("wl_output", 4);
 
-        exe.root_module.addImport("wayland", wayland_module);
+        exe.root_module.addImport("wayland", wayland_module); // update: zig fetch --save "git+https://codeberg.org/ifreund/zig-wayland#main"
         exe.root_module.linkSystemLibrary("wayland-client", .{});
     }
 
