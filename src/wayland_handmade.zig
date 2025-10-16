@@ -23,7 +23,7 @@ const WlColor = packed struct(u32) {
 
 const WlOffscreenBuffer = struct {
     buffer: ?*wl.Buffer,
-    memory: []u8,
+    memory: []align(4096) u8,
     width: u32,
     height: u32,
     stride: u32,
@@ -31,7 +31,7 @@ const WlOffscreenBuffer = struct {
 
 var global_back_buffer = std.mem.zeroInit(WlOffscreenBuffer, .{});
 
-fn wlRenderWierdGradient(buffer: *WlOffscreenBuffer, blue_offset: u32, green_offset: u32) void {
+fn wlRenderWeirdGradient(buffer: *WlOffscreenBuffer, blue_offset: u32, green_offset: u32) void {
     var row: [*]u8 = @ptrCast(buffer.memory);
 
     var y: u32 = 0;
@@ -105,8 +105,13 @@ fn wlXDGToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, context: *
     switch (event) {
         .configure => |configure| {
             if (configure.width > 0 and configure.height > 0) {
-                context.width = @intCast(configure.width);
-                context.height = @intCast(configure.height);
+                const new_width: u32 = @intCast(configure.width);
+                const new_height: u32 = @intCast(configure.height);
+                if (new_width != context.width or new_height != context.height) {
+                    context.width = new_width;
+                    context.height = new_height;
+                    context.configured = false;
+                }
             }
         },
         .close => context.running = false,
@@ -168,7 +173,12 @@ pub fn run() !void {
     var blue_offset: u32 = 0;
     var green_offset: u32 = 0;
     while (context.running) {
-        wlRenderWierdGradient(&global_back_buffer, blue_offset, green_offset);
+        if (global_back_buffer.width != context.width or global_back_buffer.height != context.height) {
+            global_back_buffer.buffer.?.destroy();
+            std.posix.munmap(global_back_buffer.memory);
+            try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
+        }
+        wlRenderWeirdGradient(&global_back_buffer, blue_offset, green_offset);
         surface.attach(global_back_buffer.buffer, 0, 0);
         surface.commit();
         if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
