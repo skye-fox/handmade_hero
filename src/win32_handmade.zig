@@ -47,15 +47,17 @@ fn win32GetWindowDimension(window: foundation.HWND) Win32WindowDimension {
     return result;
 }
 
-fn win32RenderWierdGradient(buffer: *Win32OffscreenBuffer, blue_offset: u32, green_offset: u32) void {
+fn win32RenderWierdGradient(buffer: *Win32OffscreenBuffer, blue_offset: i32, green_offset: i32) void {
     var row = @as([*]u8, @ptrCast(buffer.memory));
 
-    var y: u32 = 0;
+    var y: i32 = 0;
     while (y < buffer.height) : (y += 1) {
         var pixel: [*]Color = @ptrCast(@alignCast(row));
-        var x: u32 = 0;
+        var x: i32 = 0;
         while (x < buffer.width) : (x += 1) {
-            pixel[0] = .{ .blue = @truncate(x + blue_offset), .green = @truncate(y + green_offset), .red = @truncate(0) };
+            const blue: u8 = @truncate(@abs(x + blue_offset));
+            const green: u8 = @truncate(@abs(y + green_offset));
+            pixel[0] = .{ .blue = blue, .green = green, .red = @truncate(0) };
             pixel += 1;
         }
         row += @intCast(buffer.pitch);
@@ -187,8 +189,8 @@ pub fn run() !void {
         if (window_handle) |window| {
             const device_context = gdi.GetDC(window);
 
-            var x_offset: u32 = 0;
-            var y_offset: u32 = 0;
+            var x_offset: i32 = 0;
+            var y_offset: i32 = 0;
 
             global_running = true;
             while (global_running) {
@@ -228,8 +230,8 @@ pub fn run() !void {
                         const left_stick_x = pad.sThumbLX;
                         const left_stick_y = pad.sThumbLY;
 
-                        x_offset += @abs(left_stick_x >> 12);
-                        y_offset += @abs(left_stick_y >> 12);
+                        x_offset += left_stick_x >> 12;
+                        y_offset += left_stick_y >> 12;
 
                         const right_stick_x = pad.sThumbRX;
                         const right_stick_y = pad.sThumbRY;
