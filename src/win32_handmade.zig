@@ -35,10 +35,10 @@ const Win32WindowDimension = struct {
 const Win32SoundOutput = struct {
     samples_per_second: u32,
     bytes_per_sample: u32,
-    tone_hz: u32,
+    tone_hz: i32,
     tone_volume: i16,
     running_sample_index: u32,
-    wave_period: u32,
+    wave_period: i32,
     secondary_buffer_size: u32,
     tsine: f32,
     latency_sample_count: u32,
@@ -77,20 +77,22 @@ fn win32FillSoundBuffer(sound_output: *Win32SoundOutput, byte_to_lock: win.DWORD
             sound_output.running_sample_index += 1;
         }
 
-        const region_two_sample_count = region_one_size / sound_output.bytes_per_sample;
-        sample_out = @ptrCast(@alignCast(region_two));
-        sample_index = 0;
-        while (sample_index < region_two_sample_count) : (sample_index += 1) {
-            const sin_value = @sin(sound_output.tsine);
-            const sample_value: i16 = @intFromFloat(sin_value * @as(f32, @floatFromInt(sound_output.tone_volume)));
+        if (region_two) |_| {
+            const region_two_sample_count = region_two_size / sound_output.bytes_per_sample;
+            sample_out = @ptrCast(@alignCast(region_two));
+            sample_index = 0;
+            while (sample_index < region_two_sample_count) : (sample_index += 1) {
+                const sin_value = @sin(sound_output.tsine);
+                const sample_value: i16 = @intFromFloat(sin_value * @as(f32, @floatFromInt(sound_output.tone_volume)));
 
-            sample_out[0] = sample_value;
-            sample_out += 1;
-            sample_out[0] = sample_value;
-            sample_out += 1;
+                sample_out[0] = sample_value;
+                sample_out += 1;
+                sample_out[0] = sample_value;
+                sample_out += 1;
 
-            sound_output.tsine += 2.0 * pi / @as(f32, @floatFromInt(sound_output.wave_period));
-            sound_output.running_sample_index += 1;
+                sound_output.tsine += 2.0 * pi / @as(f32, @floatFromInt(sound_output.wave_period));
+                sound_output.running_sample_index += 1;
+            }
         }
         _ = global_secondary_buffer.?.IDirectSoundBuffer.Unlock(region_one, region_one_size, region_two, region_two_size);
     }
@@ -157,7 +159,7 @@ fn win32GetWindowDimension(window: foundation.HWND) Win32WindowDimension {
     return result;
 }
 
-fn win32RenderWierdGradient(buffer: *Win32OffscreenBuffer, blue_offset: i32, green_offset: i32) void {
+fn win32RenderWeirdGradient(buffer: *Win32OffscreenBuffer, blue_offset: i32, green_offset: i32) void {
     var row = @as([*]u8, @ptrCast(buffer.memory));
 
     var y: i32 = 0;
@@ -310,14 +312,14 @@ pub fn run() !void {
                 .samples_per_second = 48000,
                 .bytes_per_sample = @sizeOf(i16) * 2,
                 .tone_hz = 256,
-                .tone_volume = 6000,
+                .tone_volume = 3000,
                 .running_sample_index = 0,
                 .wave_period = 0,
                 .secondary_buffer_size = 0,
                 .tsine = 0,
                 .latency_sample_count = 0,
             };
-            sound_output.wave_period = sound_output.samples_per_second / sound_output.tone_hz;
+            sound_output.wave_period = @divTrunc(@as(i32, @intCast(sound_output.samples_per_second)), sound_output.tone_hz);
             sound_output.secondary_buffer_size = sound_output.samples_per_second * sound_output.bytes_per_sample;
             sound_output.latency_sample_count = sound_output.samples_per_second / 15;
 
@@ -344,21 +346,21 @@ pub fn run() !void {
                         // Controller available
                         const pad = &controller_state.Gamepad;
 
-                        const pad_up: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_UP) true else false;
-                        const pad_down: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_DOWN) true else false;
-                        const pad_left: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_LEFT) true else false;
-                        const pad_right: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_DPAD_RIGHT) true else false;
+                        const pad_up: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_DPAD_UP) != 0;
+                        const pad_down: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+                        const pad_left: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+                        const pad_right: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
 
-                        const pad_start: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_START) true else false;
-                        const pad_back: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_BACK) true else false;
+                        const pad_start: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_START) != 0;
+                        const pad_back: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_BACK) != 0;
 
-                        const pad_left_shoulder: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_LEFT_SHOULDER) true else false;
-                        const pad_right_shoulder: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_RIGHT_SHOULDER) true else false;
+                        const pad_left_shoulder: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+                        const pad_right_shoulder: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
 
-                        const pad_A: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_A) true else false;
-                        const pad_B: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_B) true else false;
-                        const pad_X: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_X) true else false;
-                        const pad_Y: bool = if (pad.wButtons == controller.XINPUT_GAMEPAD_Y) true else false;
+                        const pad_A: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_A) != 0;
+                        const pad_B: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_B) != 0;
+                        const pad_X: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_X) != 0;
+                        const pad_Y: bool = (pad.wButtons & controller.XINPUT_GAMEPAD_Y) != 0;
 
                         const left_stick_x = pad.sThumbLX;
                         const left_stick_y = pad.sThumbLY;
@@ -369,8 +371,8 @@ pub fn run() !void {
                         const right_stick_x = pad.sThumbRX;
                         const right_stick_y = pad.sThumbRY;
 
-                        sound_output.tone_hz = 512 + @as(u32, @intFromFloat(256.0 * (@as(f32, @floatFromInt(right_stick_y)) / 3000.0)));
-                        sound_output.wave_period = sound_output.samples_per_second / sound_output.tone_hz;
+                        sound_output.tone_hz = 512 + @as(i32, @intFromFloat(@trunc(256.0 * (@as(f32, @floatFromInt(right_stick_y)) / 3000.0))));
+                        sound_output.wave_period = @divTrunc(@as(i32, @intCast(sound_output.samples_per_second)), sound_output.tone_hz);
 
                         _ = pad_up;
                         _ = pad_down;
@@ -406,14 +408,14 @@ pub fn run() !void {
                 // vibration.wRightMotorSpeed = 60000;
                 // _ = controller.XInputSetState(0, &vibration);
 
-                win32RenderWierdGradient(&global_back_buffer, x_offset, y_offset);
+                win32RenderWeirdGradient(&global_back_buffer, x_offset, y_offset);
 
                 var write_cursor: win.DWORD = 0;
                 var play_cursor: win.DWORD = 0;
 
                 if (zig32.zig.SUCCEEDED(global_secondary_buffer.?.IDirectSoundBuffer.GetCurrentPosition(&play_cursor, &write_cursor))) {
                     const byte_to_lock = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
-                    const target_cursor: win.DWORD = play_cursor + ((sound_output.latency_sample_count * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size);
+                    const target_cursor: win.DWORD = ((play_cursor + (sound_output.latency_sample_count * sound_output.bytes_per_sample)) % sound_output.secondary_buffer_size);
                     var bytes_to_write: win.DWORD = 0;
                     if (byte_to_lock > target_cursor) {
                         bytes_to_write = sound_output.secondary_buffer_size - byte_to_lock;
@@ -421,6 +423,7 @@ pub fn run() !void {
                     } else {
                         bytes_to_write = target_cursor - byte_to_lock;
                     }
+                    win32FillSoundBuffer(&sound_output, byte_to_lock, bytes_to_write);
                 }
 
                 const dimension = win32GetWindowDimension(window);
