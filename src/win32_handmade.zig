@@ -8,6 +8,7 @@ const d_sound = @import("zigwin32").media.audio.direct_sound;
 const foundation = @import("zigwin32").foundation;
 const gdi = @import("zigwin32").graphics.gdi;
 const kbam = @import("zigwin32").ui.input.keyboard_and_mouse;
+const perf = @import("zigwin32").system.performance;
 const wam = @import("zigwin32").ui.windows_and_messaging;
 const zig32_mem = @import("zigwin32").system.memory;
 
@@ -52,6 +53,16 @@ var global_running = false;
 
 var global_back_buffer = std.mem.zeroInit(Win32OffscreenBuffer, .{});
 var global_secondary_buffer: ?*d_sound.IDirectSoundBuffer8 = undefined;
+
+inline fn rdtsc() usize {
+    var a: u32 = undefined;
+    var b: u32 = undefined;
+    asm volatile ("rdtsc"
+        : [a] "={edx}" (a),
+          [b] "={eax}" (b),
+    );
+    return (@as(u64, a) << 32) | b;
+}
 
 fn win32FillSoundBuffer(sound_output: *Win32SoundOutput, byte_to_lock: win.DWORD, bytes_to_write: win.DWORD) void {
     var region_one: ?*anyopaque = null;
@@ -275,6 +286,10 @@ fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: f
 }
 
 pub fn run() !void {
+    var perf_count_frequency_result: foundation.LARGE_INTEGER = undefined;
+    _ = perf.QueryPerformanceFrequency(&perf_count_frequency_result);
+    const perf_count_frequency: i64 = perf_count_frequency_result.QuadPart;
+
     win32ResizeDIBSection(&global_back_buffer, 1280, 720);
 
     var window_class = std.mem.zeroInit(wam.WNDCLASSA, .{});
@@ -326,6 +341,10 @@ pub fn run() !void {
             win32InitDSound(window, sound_output.samples_per_second, sound_output.secondary_buffer_size);
             win32FillSoundBuffer(&sound_output, 0, sound_output.latency_sample_count * sound_output.bytes_per_sample);
             _ = global_secondary_buffer.?.IDirectSoundBuffer.Play(0, 0, d_sound.DSBPLAY_LOOPING);
+
+            var last_counter: foundation.LARGE_INTEGER = undefined;
+            _ = perf.QueryPerformanceCounter(&last_counter);
+            var last_cycle_count: i64 = @intCast(rdtsc());
 
             global_running = true;
             while (global_running) {
@@ -428,6 +447,22 @@ pub fn run() !void {
 
                 const dimension = win32GetWindowDimension(window);
                 win32DisplayBufferInWindow(&global_back_buffer, device_context.?, dimension.width, dimension.height);
+
+                const end_cycle_count: i64 = @intCast(rdtsc());
+
+                var end_counter: foundation.LARGE_INTEGER = undefined;
+                _ = perf.QueryPerformanceCounter(&end_counter);
+
+                const cycles_elapsed: i64 = end_cycle_count - last_cycle_count;
+                const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
+                const ms_per_frame: f32 = (1000.0 * @as(f32, @floatFromInt(counter_elapsed))) / @as(f32, @floatFromInt(perf_count_frequency));
+                const frames_per_seconds: f32 = @as(f32, @floatFromInt(perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
+                const mega_cycles_per_frame: f32 = (@as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0));
+
+                std.debug.print("ms/f: {any}, f/s: {any}, mega_cycles/f {}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
+
+                last_counter = end_counter;
+                last_cycle_count = end_cycle_count;
             }
         } else {
             // TODO: Logging
