@@ -459,7 +459,7 @@ pub fn run() !void {
                 const frames_per_seconds: f32 = @as(f32, @floatFromInt(perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
                 const mega_cycles_per_frame: f32 = (@as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0));
 
-                std.debug.print("ms/f: {any}, f/s: {any}, mega_cycles/f {}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
+                std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
 
                 last_counter = end_counter;
                 last_cycle_count = end_cycle_count;
