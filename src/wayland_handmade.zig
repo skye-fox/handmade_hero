@@ -8,8 +8,8 @@ const WlContext = struct {
     shm: ?*wl.Shm,
     compositor: ?*wl.Compositor,
     wm_base: ?*xdg.WmBase,
-    width: u32 = 256,
-    height: u32 = 256,
+    width: i32 = 256,
+    height: i32 = 256,
     configured: bool = false,
     running: bool = true,
 };
@@ -24,9 +24,9 @@ const WlColor = packed struct(u32) {
 const WlOffscreenBuffer = struct {
     buffer: ?*wl.Buffer,
     memory: []align(4096) u8,
-    width: u32,
-    height: u32,
-    stride: u32,
+    width: i32,
+    height: i32,
+    pitch: i32,
 };
 
 var global_back_buffer = std.mem.zeroInit(WlOffscreenBuffer, .{});
@@ -42,7 +42,7 @@ fn wlRenderWeirdGradient(buffer: *WlOffscreenBuffer, blue_offset: u32, green_off
             pixel[0] = .{ .blue = @truncate(x +% blue_offset), .green = @truncate(y +% green_offset), .red = @truncate(0) };
             pixel += 1;
         }
-        row += @intCast(buffer.stride);
+        row += @intCast(buffer.pitch);
     }
 
     // const data_u32: [*]u32 = @ptrCast(@alignCast(data));
@@ -52,11 +52,11 @@ fn wlRenderWeirdGradient(buffer: *WlOffscreenBuffer, blue_offset: u32, green_off
 
 }
 
-fn WlCreateBuffer(buffer: *WlOffscreenBuffer, shm: *wl.Shm, width: u32, height: u32) !void {
+fn WlCreateBuffer(buffer: *WlOffscreenBuffer, shm: *wl.Shm, width: i32, height: i32) !void {
     buffer.width = width;
     buffer.height = height;
-    buffer.stride = width * 4;
-    const size = buffer.stride * height;
+    buffer.pitch = width * 4;
+    const size: u64 = @intCast(buffer.pitch * height);
     const fd = try std.posix.memfd_create("handmade_hero", 0);
     try std.posix.ftruncate(fd, size);
 
@@ -65,7 +65,7 @@ fn WlCreateBuffer(buffer: *WlOffscreenBuffer, shm: *wl.Shm, width: u32, height: 
     const pool = try shm.createPool(fd, @intCast(size));
     defer pool.destroy();
 
-    buffer.buffer = try pool.createBuffer(0, @intCast(width), @intCast(height), @intCast(buffer.stride), wl.Shm.Format.argb8888);
+    buffer.buffer = try pool.createBuffer(0, @intCast(width), @intCast(height), @intCast(buffer.pitch), wl.Shm.Format.argb8888);
 }
 
 fn wlRegistryListener(registry: *wl.Registry, event: wl.Registry.Event, context: *WlContext) void {
@@ -105,8 +105,8 @@ fn wlXDGToplevelListener(_: *xdg.Toplevel, event: xdg.Toplevel.Event, context: *
     switch (event) {
         .configure => |configure| {
             if (configure.width > 0 and configure.height > 0) {
-                const new_width: u32 = @intCast(configure.width);
-                const new_height: u32 = @intCast(configure.height);
+                const new_width: i32 = @intCast(configure.width);
+                const new_height: i32 = @intCast(configure.height);
                 if (new_width != context.width or new_height != context.height) {
                     context.width = new_width;
                     context.height = new_height;
