@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const platform = @import("platform.zig");
+
 const wayland = @import("wayland");
 const wl = wayland.client.wl;
 const xdg = wayland.client.xdg;
@@ -14,13 +16,6 @@ const WlContext = struct {
     running: bool = true,
 };
 
-const WlColor = packed struct(u32) {
-    blue: u8,
-    green: u8,
-    red: u8,
-    alpha: u8 = 255,
-};
-
 const WlOffscreenBuffer = struct {
     buffer: ?*wl.Buffer,
     memory: []align(4096) u8,
@@ -30,27 +25,6 @@ const WlOffscreenBuffer = struct {
 };
 
 var global_back_buffer = std.mem.zeroInit(WlOffscreenBuffer, .{});
-
-fn wlRenderWeirdGradient(buffer: *WlOffscreenBuffer, blue_offset: u32, green_offset: u32) void {
-    var row: [*]u8 = @ptrCast(buffer.memory);
-
-    var y: u32 = 0;
-    while (y < buffer.height) : (y += 1) {
-        var pixel: [*]WlColor = @ptrCast(@alignCast(row));
-        var x: u32 = 0;
-        while (x < buffer.width) : (x += 1) {
-            pixel[0] = .{ .blue = @truncate(x +% blue_offset), .green = @truncate(y +% green_offset), .red = @truncate(0) };
-            pixel += 1;
-        }
-        row += @intCast(buffer.pitch);
-    }
-
-    // const data_u32: [*]u32 = @ptrCast(@alignCast(data));
-    // for (0..width * height) |i| {
-    //     data_u32[i] = 0xFF8B5CF6;
-    // }
-
-}
 
 fn WlCreateBuffer(buffer: *WlOffscreenBuffer, shm: *wl.Shm, width: i32, height: i32) !void {
     buffer.width = width;
@@ -170,19 +144,28 @@ pub fn run() !void {
     try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
     defer global_back_buffer.buffer.?.destroy();
 
-    var blue_offset: u32 = 0;
-    var green_offset: u32 = 0;
+    var x_offset: i32 = 0;
+    var y_offset: i32 = 0;
     while (context.running) {
         if (global_back_buffer.width != context.width or global_back_buffer.height != context.height) {
             global_back_buffer.buffer.?.destroy();
             std.posix.munmap(global_back_buffer.memory);
             try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
         }
-        wlRenderWeirdGradient(&global_back_buffer, blue_offset, green_offset);
+
+        var buffer = platform.GameOffScreenBuffer{
+            .memory = global_back_buffer.memory,
+            .width = global_back_buffer.width,
+            .height = global_back_buffer.height,
+            .pitch = global_back_buffer.pitch,
+        };
+        const alpha: i32 = 255;
+        platform.gameUpdateAndRender(&buffer, x_offset, y_offset, alpha);
+
         surface.attach(global_back_buffer.buffer, 0, 0);
         surface.commit();
         if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
-        blue_offset += 1;
-        green_offset += 1;
+        x_offset += 1;
+        y_offset += 1;
     }
 }

@@ -1,6 +1,8 @@
 const std = @import("std");
 const win = @import("std").os.windows;
 
+const platform = @import("platform.zig");
+
 const zig32 = @import("zigwin32");
 const audio = @import("zigwin32").media.audio;
 const controller = @import("zigwin32").ui.input.xbox_controller;
@@ -11,14 +13,6 @@ const kbam = @import("zigwin32").ui.input.keyboard_and_mouse;
 const perf = @import("zigwin32").system.performance;
 const wam = @import("zigwin32").ui.windows_and_messaging;
 const zig32_mem = @import("zigwin32").system.memory;
-
-const Color = packed struct(u32) {
-    // NOTE: Pixels are always 32 bits wide, windows memory order BB GG RR XX
-    blue: u8,
-    green: u8,
-    red: u8,
-    pad: u8 = 0,
-};
 
 const Win32OffscreenBuffer = struct {
     info: gdi.BITMAPINFO,
@@ -168,33 +162,6 @@ fn win32GetWindowDimension(window: foundation.HWND) Win32WindowDimension {
         .height = client_rect.bottom - client_rect.top,
     };
     return result;
-}
-
-fn win32RenderWeirdGradient(buffer: *Win32OffscreenBuffer, blue_offset: i32, green_offset: i32) void {
-    var row = @as([*]u8, @ptrCast(buffer.memory));
-
-    var y: i32 = 0;
-    while (y < buffer.height) : (y += 1) {
-        var pixel: [*]Color = @ptrCast(@alignCast(row));
-        var x: i32 = 0;
-        while (x < buffer.width) : (x += 1) {
-            const blue: u8 = @truncate(@abs(x + blue_offset));
-            const green: u8 = @truncate(@abs(y + green_offset));
-            pixel[0] = .{ .blue = blue, .green = green, .red = @truncate(0) };
-            pixel += 1;
-        }
-        row += @intCast(buffer.pitch);
-    }
-
-    //     Make a solid bg color
-    //
-    //     var pixel: [*]Color = buffer.memory;
-    // const width: u32 = @intCast(buffer.width);
-    // const height: u32 = @intCast(buffer.height);
-    // var pixel: [*]Color = @ptrCast(@alignCast(buffer.memory));
-    // for (0..width * height) |i| {
-    //     pixel[i] = .{ .blue = 246, .green = 92, .red = 139 };
-    // }
 }
 
 fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32) void {
@@ -427,7 +394,15 @@ pub fn run() !void {
                 // vibration.wRightMotorSpeed = 60000;
                 // _ = controller.XInputSetState(0, &vibration);
 
-                win32RenderWeirdGradient(&global_back_buffer, x_offset, y_offset);
+                var buffer = platform.GameOffScreenBuffer{
+                    .memory = @ptrCast(@alignCast(global_back_buffer.memory)),
+                    .width = global_back_buffer.width,
+                    .height = global_back_buffer.height,
+                    .pitch = global_back_buffer.pitch,
+                };
+                const alpha: i32 = 0;
+                platform.gameUpdateAndRender(&buffer, x_offset, y_offset, alpha);
+                // win32RenderWeirdGradient(&global_back_buffer, x_offset, y_offset);
 
                 var write_cursor: win.DWORD = 0;
                 var play_cursor: win.DWORD = 0;
@@ -456,10 +431,13 @@ pub fn run() !void {
                 const cycles_elapsed: i64 = end_cycle_count - last_cycle_count;
                 const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
                 const ms_per_frame: f32 = (1000.0 * @as(f32, @floatFromInt(counter_elapsed))) / @as(f32, @floatFromInt(perf_count_frequency));
-                const frames_per_seconds: f32 = @as(f32, @floatFromInt(perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
+                const frames_per_second: f32 = @as(f32, @floatFromInt(perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
                 const mega_cycles_per_frame: f32 = (@as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0));
 
-                std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
+                _ = ms_per_frame;
+                _ = frames_per_second;
+                _ = mega_cycles_per_frame;
+                // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
 
                 last_counter = end_counter;
                 last_cycle_count = end_cycle_count;
