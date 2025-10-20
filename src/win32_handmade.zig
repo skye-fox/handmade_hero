@@ -71,11 +71,13 @@ fn win32ClearBuffer(sound_output: *Win32SoundOutput) void {
             dest_sample[0] = 0;
             dest_sample += 1;
         }
-        dest_sample = @ptrCast(@alignCast(region_two));
-        byte_index = 0;
-        while (byte_index < region_two_size) : (byte_index += 1) {
-            dest_sample[0] = 0;
-            dest_sample += 1;
+        if (region_two) |_| {
+            dest_sample = @ptrCast(@alignCast(region_two));
+            byte_index = 0;
+            while (byte_index < region_two_size) : (byte_index += 1) {
+                dest_sample[0] = 0;
+                dest_sample += 1;
+            }
         }
     }
     _ = global_secondary_buffer.?.IDirectSoundBuffer.Unlock(region_one, region_one_size, region_two, region_two_size);

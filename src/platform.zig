@@ -52,8 +52,8 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32,
         var pixel: [*]Color = @ptrCast(@alignCast(row));
         var x: i32 = 0;
         while (x < buffer.width) : (x += 1) {
-            const blue: u8 = @truncate(@abs(x + blue_offset));
-            const green: u8 = @truncate(@abs(y + green_offset));
+            const blue: u8 = @truncate(@abs(x +% blue_offset));
+            const green: u8 = @truncate(@abs(y +% green_offset));
             pixel[0] = .{ .blue = blue, .green = green, .red = @truncate(0), .alpha = @intCast(alpha) };
             pixel += 1;
         }
