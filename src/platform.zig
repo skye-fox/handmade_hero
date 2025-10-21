@@ -1,5 +1,44 @@
 const std = @import("std");
 
+pub const GameButtonState = extern struct {
+    half_transition_count: i32,
+    ended_down: bool,
+};
+
+pub const GameControllerInput = extern struct {
+    is_analog: bool,
+    is_connected: bool,
+
+    stick_average_x: f32,
+    stick_average_y: f32,
+
+    button: extern union {
+        buttons: [12]GameButtonState,
+        input: extern struct {
+            action_up: GameButtonState,
+            action_down: GameButtonState,
+            action_left: GameButtonState,
+            action_right: GameButtonState,
+
+            move_up: GameButtonState,
+            move_down: GameButtonState,
+            move_left: GameButtonState,
+            move_right: GameButtonState,
+
+            left_shoulder: GameButtonState,
+            right_shoulder: GameButtonState,
+
+            back: GameButtonState,
+            start: GameButtonState,
+
+            // NOTE: All buttons must be added above this line
+            terminator: GameButtonState,
+        },
+    },
+};
+
+pub const GameInput = struct { controllers: [5]GameControllerInput };
+
 pub const GameSoundOutputBuffer = struct {
     samples_per_second: i32,
     sample_count: i32,
@@ -71,7 +110,24 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32,
     // }
 }
 
-pub fn gameUpdateAndRender(buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer, blue_offset: i32, green_offset: i32, alpha: i32, tone_hz: i32) void {
+var x_offset: i32 = 0;
+var y_offset: i32 = 0;
+
+pub fn gameUpdateAndRender(input: *GameInput, buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer, alpha: i32) void {
+    var tone_hz: i32 = 256;
+    const input0: *GameControllerInput = &input.controllers[0];
+    if (input0.is_analog) {
+        // NOTE: Analog
+        tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.stick_average_x));
+        x_offset += @as(i32, @intFromFloat(4.0 * input0.stick_average_y));
+    } else {
+        // NOTE: Digital
+    }
+
+    if (input0.button.input.action_down.ended_down) {
+        y_offset += 1;
+    }
+
     gameOutputSound(sound_buffer, tone_hz);
-    gameRender(buffer, blue_offset, green_offset, alpha);
+    gameRender(buffer, x_offset, y_offset, alpha);
 }
