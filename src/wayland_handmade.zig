@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const platform = @import("platform.zig");
+const game = @import("handmade.zig");
 
 const wayland = @import("wayland");
 const wl = wayland.client.wl;
@@ -153,14 +153,13 @@ pub fn run() !void {
             try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
         }
 
-        var buffer = platform.GameOffScreenBuffer{
+        var buffer = game.GameOffScreenBuffer{
             .memory = global_back_buffer.memory,
             .width = global_back_buffer.width,
             .height = global_back_buffer.height,
             .pitch = global_back_buffer.pitch,
         };
-        const alpha: i32 = 255;
-        platform.gameUpdateAndRender(&buffer, x_offset, y_offset, alpha);
+        game.TEMPgameUpdateAndRender(&buffer, x_offset, y_offset);
 
         surface.attach(global_back_buffer.buffer, 0, 0);
         surface.commit();

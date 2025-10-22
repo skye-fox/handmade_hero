@@ -169,3 +169,7 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
     gameOutputSound(sound_buffer, game_state.tone_hz);
     gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
 }
+
+pub fn TEMPgameUpdateAndRender(video_buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) void {
+    gameRender(video_buffer, blue_offset, green_offset);
+}
