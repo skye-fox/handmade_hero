@@ -397,9 +397,9 @@ pub fn run() !void {
                             win32ProcessXInputDigitalButton(&old_controller.button.input.move_right, &new_controller.button.input.move_right, pad.wButtons, controller.XINPUT_GAMEPAD_DPAD_RIGHT);
 
                             win32ProcessXInputDigitalButton(&old_controller.button.input.action_down, &new_controller.button.input.action_down, pad.wButtons, controller.XINPUT_GAMEPAD_A);
-                            win32ProcessXInputDigitalButton(&old_controller.button.input.action_right, &new_controller.button.input.action_down, pad.wButtons, controller.XINPUT_GAMEPAD_B);
-                            win32ProcessXInputDigitalButton(&old_controller.button.input.action_left, &new_controller.button.input.action_down, pad.wButtons, controller.XINPUT_GAMEPAD_X);
-                            win32ProcessXInputDigitalButton(&old_controller.button.input.action_up, &new_controller.button.input.action_down, pad.wButtons, controller.XINPUT_GAMEPAD_Y);
+                            win32ProcessXInputDigitalButton(&old_controller.button.input.action_right, &new_controller.button.input.action_right, pad.wButtons, controller.XINPUT_GAMEPAD_B);
+                            win32ProcessXInputDigitalButton(&old_controller.button.input.action_left, &new_controller.button.input.action_left, pad.wButtons, controller.XINPUT_GAMEPAD_X);
+                            win32ProcessXInputDigitalButton(&old_controller.button.input.action_up, &new_controller.button.input.action_up, pad.wButtons, controller.XINPUT_GAMEPAD_Y);
 
                             win32ProcessXInputDigitalButton(&old_controller.button.input.start, &new_controller.button.input.start, pad.wButtons, controller.XINPUT_GAMEPAD_START);
                             win32ProcessXInputDigitalButton(&old_controller.button.input.back, &new_controller.button.input.back, pad.wButtons, controller.XINPUT_GAMEPAD_BACK);
