@@ -1,4 +1,19 @@
 const std = @import("std");
+const debug = @import("builtin").mode == @import("std").builtin.OptimizeMode.Debug;
+
+pub const GameMemory = struct {
+    is_initialized: bool,
+    permanent_storage_size: u64,
+    permanent_storage: ?*anyopaque,
+    transient_storage_size: u64,
+    transient_storage: ?*anyopaque,
+};
+
+const GameState = struct {
+    tone_hz: i32,
+    blue_offset: i32,
+    green_offset: i32,
+};
 
 pub const GameButtonState = extern struct {
     half_transition_count: i32,
@@ -57,12 +72,26 @@ const Color = packed struct(u32) {
     blue: u8,
     green: u8,
     red: u8,
-    alpha: u8,
+    alpha: u8 = 255,
 };
 
-const pi: f32 = 3.14159265359;
-
 var tsine: f32 = 0.0;
+
+pub fn kiloBytes(value: u32) u64 {
+    return value * 1024;
+}
+
+pub fn megaBytes(value: u32) u64 {
+    return value * std.math.pow(u32, 1024, 2);
+}
+
+pub fn gigaBytes(value: u32) u64 {
+    return value * std.math.pow(u64, 1024, 3);
+}
+
+pub fn teraBytes(value: u32) u64 {
+    return value * std.math.pow(u64, 1024, 4);
+}
 
 fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const tone_volume: i32 = 3000;
@@ -79,11 +108,11 @@ fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
         sample_out[0] = sample_value;
         sample_out += 1;
 
-        tsine += 2.0 * pi / @as(f32, @floatFromInt(wave_period));
+        tsine += 2.0 * std.math.pi / @as(f32, @floatFromInt(wave_period));
     }
 }
 
-fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32, alpha: i32) void {
+fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) void {
     var row = @as([*]u8, @ptrCast(buffer.memory));
 
     var y: i32 = 0;
@@ -93,7 +122,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32,
         while (x < buffer.width) : (x += 1) {
             const blue: u8 = @truncate(@abs(x +% blue_offset));
             const green: u8 = @truncate(@abs(y +% green_offset));
-            pixel[0] = .{ .blue = blue, .green = green, .red = @truncate(0), .alpha = @intCast(alpha) };
+            pixel[0] = .{ .blue = blue, .green = green, .red = @truncate(0) };
             pixel += 1;
         }
         row += @intCast(buffer.pitch);
@@ -110,24 +139,33 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32,
     // }
 }
 
-var x_offset: i32 = 0;
-var y_offset: i32 = 0;
+pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer) void {
+    if (debug) {
+        std.debug.assert(@sizeOf(GameMemory) <= memory.permanent_storage_size);
+    }
 
-pub fn gameUpdateAndRender(input: *GameInput, buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer, alpha: i32) void {
-    var tone_hz: i32 = 256;
+    const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
+    if (!memory.is_initialized) {
+        game_state.tone_hz = 256;
+        game_state.blue_offset = 0;
+        game_state.green_offset = 0;
+
+        memory.is_initialized = true;
+    }
+
     const input0: *GameControllerInput = &input.controllers[0];
     if (input0.is_analog) {
         // NOTE: Analog
-        tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.stick_average_x));
-        x_offset += @as(i32, @intFromFloat(4.0 * input0.stick_average_y));
+        game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.stick_average_x));
+        game_state.blue_offset += @as(i32, @intFromFloat(4.0 * input0.stick_average_y));
     } else {
         // NOTE: Digital
     }
 
     if (input0.button.input.action_down.ended_down) {
-        y_offset += 1;
+        game_state.green_offset += 1;
     }
 
-    gameOutputSound(sound_buffer, tone_hz);
-    gameRender(buffer, x_offset, y_offset, alpha);
+    gameOutputSound(sound_buffer, game_state.tone_hz);
+    gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
 }
