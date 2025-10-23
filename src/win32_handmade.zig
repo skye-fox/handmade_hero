@@ -455,8 +455,8 @@ pub fn run() !void {
                     new_keyboard_controller.* = zero_controller;
                     new_keyboard_controller.is_connected = true;
 
-                    for (0..new_keyboard_controller.button.buttons.len) |index| {
-                        new_keyboard_controller.button.buttons[index].ended_down = old_keyboard_controller.button.buttons[index].ended_down;
+                    for (0..new_keyboard_controller.button.buttons.len) |button_index| {
+                        new_keyboard_controller.button.buttons[button_index].ended_down = old_keyboard_controller.button.buttons[button_index].ended_down;
                     }
 
                     win32ProcessPendingMessages(new_keyboard_controller);
