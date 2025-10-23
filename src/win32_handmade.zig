@@ -152,16 +152,7 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
                         .RIGHT => {},
                         .SPACE => {},
                         // .F4 => {},
-                        .ESCAPE => {
-                            std.debug.print("Escape: ", .{});
-                            if (is_down) {
-                                std.debug.print("is_down ", .{});
-                            }
-                            if (was_down) {
-                                std.debug.print("was_down ", .{});
-                            }
-                            std.debug.print("\n", .{});
-                        },
+                        .ESCAPE => {},
                         else => {},
                     }
                 }
@@ -180,10 +171,8 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
 
 fn win32ProcessKeyboardMessage(new_state: *game.GameButtonState, is_down: bool) void {
     std.debug.assert(new_state.ended_down != is_down);
-    std.debug.print("is_down: {}, transition: {}\n", .{ is_down, new_state.half_transition_count });
     new_state.ended_down = is_down;
     new_state.half_transition_count += 1;
-    std.debug.print("is_down: {}, transition: {}\n", .{ is_down, new_state.half_transition_count });
 }
 
 fn win32ProcessXInputDigitalButton(old_state: *game.GameButtonState, new_state: *game.GameButtonState, xinput_button_state: win.DWORD, button_bit: win.DWORD) void {
@@ -453,7 +442,6 @@ pub fn run() !void {
 
                 global_running = true;
                 while (global_running) {
-                    // BUG: Keyboard isn't working correctly.
                     const old_keyboard_controller: *game.GameControllerInput = &old_input.controllers[0];
                     const new_keyboard_controller: *game.GameControllerInput = &new_input.controllers[0];
                     const zero_controller = std.mem.zeroInit(game.GameControllerInput, .{});
