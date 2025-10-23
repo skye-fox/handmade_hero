@@ -1,6 +1,10 @@
 const std = @import("std");
 const debug = @import("builtin").mode == @import("std").builtin.OptimizeMode.Debug;
 
+const builtin = @import("builtin");
+
+const platform = if (builtin.os.tag == .windows) @import("win32_handmade.zig");
+
 pub const GameMemory = struct {
     is_initialized: bool,
     permanent_storage_size: u64,
@@ -139,7 +143,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
     // }
 }
 
-pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer) void {
+pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer) !void {
     if (debug) {
         std.debug.assert(@sizeOf(GameMemory) <= memory.permanent_storage_size);
     }
@@ -150,7 +154,17 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         game_state.blue_offset = 0;
         game_state.green_offset = 0;
 
-        memory.is_initialized = true;
+        if (debug) {
+            const source = @src();
+            const file_name = source.file;
+            const file: platform.DEBUGReadFileResult = platform.DEBUG_readEntireFile(file_name);
+            if (file.content) |content| {
+                _ = platform.DEBUG_writeEntireFile("test.txt", file.content_size, content);
+                platform.DEBUG_freeFileMemory(content);
+            }
+
+            memory.is_initialized = true;
+        }
     }
 
     const input0: *GameControllerInput = &input.controllers[0];

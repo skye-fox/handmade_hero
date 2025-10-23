@@ -11,9 +11,15 @@ const d_sound = @import("zigwin32").media.audio.direct_sound;
 const foundation = @import("zigwin32").foundation;
 const gdi = @import("zigwin32").graphics.gdi;
 const kbam = @import("zigwin32").ui.input.keyboard_and_mouse;
+const fs = @import("zigwin32").storage.file_system;
 const perf = @import("zigwin32").system.performance;
 const wam = @import("zigwin32").ui.windows_and_messaging;
 const zig32_mem = @import("zigwin32").system.memory;
+
+pub const DEBUGReadFileResult = struct {
+    content_size: u32,
+    content: ?*anyopaque,
+};
 
 const Win32OffscreenBuffer = struct {
     info: gdi.BITMAPINFO,
@@ -55,6 +61,71 @@ inline fn rdtsc() usize {
     );
     return (@as(u64, a) << 32) | b;
 }
+
+// NOTE: (CASEY) Start-->
+// These are NOT for doing anything in the shipping game - they are
+// blocking and the write doesn't protect against lost data!
+
+pub fn DEBUG_readEntireFile(file_name: [*:0]const u8) DEBUGReadFileResult {
+    var result = DEBUGReadFileResult{
+        .content_size = 0,
+        .content = null,
+    };
+
+    const file_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_READ, fs.FILE_SHARE_READ, null, fs.OPEN_EXISTING, fs.FILE_ATTRIBUTE_NORMAL, null);
+    if (file_handle != foundation.INVALID_HANDLE_VALUE) {
+        var file_size: foundation.LARGE_INTEGER = undefined;
+        if (zig32.zig.SUCCEEDED(fs.GetFileSizeEx(file_handle, &file_size))) {
+            std.debug.assert(file_size.QuadPart <= 0xFFFFFFFF);
+            const file_size32: u32 = @intCast(file_size.QuadPart);
+            result.content = zig32_mem.VirtualAlloc(null, file_size32, reserve_and_commit, zig32_mem.PAGE_READWRITE);
+            if (result.content) |content| {
+                var bytes_read: win.DWORD = 0;
+                if (zig32.zig.SUCCEEDED(fs.ReadFile(file_handle, result.content, file_size32, &bytes_read, null)) and file_size32 == bytes_read) {
+                    std.debug.print("File read successfully.\n", .{});
+                    result.content_size = file_size32;
+                } else {
+                    DEBUG_freeFileMemory(content);
+                    result.content = null;
+                }
+            } else {
+                // TODO: Logging
+            }
+        } else {
+            // TODO: Logging
+        }
+        zig32.zig.closeHandle(file_handle);
+    } else {
+        // TODO: Logging
+    }
+    return result;
+}
+
+pub fn DEBUG_freeFileMemory(memory: ?*anyopaque) void {
+    if (memory) |_| {
+        _ = zig32_mem.VirtualFree(memory, 0, zig32_mem.MEM_RELEASE);
+    }
+}
+
+pub fn DEBUG_writeEntireFile(file_name: [*:0]const u8, memory_size: u32, memory: ?*anyopaque) bool {
+    var result = false;
+
+    const file_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_WRITE, fs.FILE_SHARE_NONE, null, fs.CREATE_ALWAYS, fs.FILE_ATTRIBUTE_NORMAL, null);
+    if (file_handle != foundation.INVALID_HANDLE_VALUE) {
+        var bytes_written: win.DWORD = 0;
+        if (zig32.zig.SUCCEEDED(fs.WriteFile(file_handle, memory, memory_size, &bytes_written, null))) {
+            std.debug.print("File written successfully\n", .{});
+            result = bytes_written == memory_size;
+        } else {
+            // TODO: Logging
+        }
+    } else {
+        // TODO: Logging
+    }
+    return result;
+}
+
+// NOTE: END-->
 
 fn win32ProcessXInputDigitalButton(old_state: *game.GameButtonState, new_state: *game.GameButtonState, xinput_button_state: win.DWORD, button_bit: win.DWORD) void {
     new_state.ended_down = if ((xinput_button_state & button_bit) == button_bit) true else false;
@@ -456,7 +527,7 @@ pub fn run() !void {
                         .pitch = global_back_buffer.pitch,
                     };
 
-                    game.gameUpdateAndRender(&game_memory, new_input, &buffer, &game_sound_output_buffer);
+                    try game.gameUpdateAndRender(&game_memory, new_input, &buffer, &game_sound_output_buffer);
 
                     if (sound_is_valid) {
                         win32FillSoundBuffer(&sound_output, &game_sound_output_buffer, byte_to_lock, bytes_to_write);
