@@ -28,8 +28,11 @@ pub const GameControllerInput = extern struct {
     is_analog: bool,
     is_connected: bool,
 
-    stick_average_x: f32,
-    stick_average_y: f32,
+    left_stick_average_x: f32,
+    left_stick_average_y: f32,
+
+    right_stick_average_x: f32,
+    right_stick_average_y: f32,
 
     button: extern union {
         buttons: [12]GameButtonState,
@@ -97,7 +100,7 @@ pub fn teraBytes(value: u32) u64 {
     return value * std.math.pow(u64, 1024, 4);
 }
 
-pub inline fn getController(input: *GameInput, controller_index: u32) *GameControllerInput {
+pub inline fn getController(input: *GameInput, controller_index: usize) *GameControllerInput {
     std.debug.assert(controller_index < input.controllers.len);
 
     const result: *GameControllerInput = &input.controllers[controller_index];
@@ -174,13 +177,14 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         }
     }
 
-    var controller_index: u32 = 0;
-    while (controller_index < input.controllers.len) : (controller_index += 1) {
+    for (0..input.controllers.len) |controller_index| {
         const controller: *GameControllerInput = getController(input, controller_index);
         if (controller.is_analog) {
             // NOTE: Analog
-            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.stick_average_x));
-            game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.stick_average_y));
+            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_x));
+            // game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_y));
+            game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
+            game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
         } else {
             // NOTE: Digital
             if (controller.button.input.move_left.ended_down) {
@@ -190,12 +194,10 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
             if (controller.button.input.move_right.ended_down) {
                 game_state.blue_offset += 1;
             }
+            if (controller.button.input.move_down.ended_down) {
+                game_state.green_offset -= 1;
+            }
         }
-
-        if (controller.button.input.move_down.ended_down) {
-            game_state.green_offset -= 1;
-        }
-
         if (controller.button.input.action_down.ended_down) {
             game_state.green_offset -= 1;
         }
