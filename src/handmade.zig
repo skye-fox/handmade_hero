@@ -172,9 +172,8 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
                 _ = platform.DEBUG_writeEntireFile("test.txt", file.content_size, content);
                 platform.DEBUG_freeFileMemory(content);
             }
-
-            memory.is_initialized = true;
         }
+        memory.is_initialized = true;
     }
 
     for (0..input.controllers.len) |controller_index| {

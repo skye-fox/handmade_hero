@@ -505,7 +505,7 @@ pub fn run() !void {
                                 new_controller.is_analog = false;
                             }
 
-                            if ((pad.wButtons & controller.XINPUT_GAMEPAD_DPAD_UP) != 0) {
+                            if ((pad.wButtons & controller.XINPUT_GAMEPAD_DPAD_RIGHT) != 0) {
                                 new_controller.left_stick_average_x = 1.0;
                                 new_controller.is_analog = false;
                             }
