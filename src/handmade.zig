@@ -155,9 +155,8 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         game_state.green_offset = 0;
 
         if (debug) {
-            const source = @src();
-            const file_name = source.file;
-            const file: platform.DEBUGReadFileResult = platform.DEBUG_readEntireFile(file_name);
+            const file_path = "src/handmade.zig";
+            const file: platform.DEBUGReadFileResult = platform.DEBUG_readEntireFile(file_path);
             if (file.content) |content| {
                 _ = platform.DEBUG_writeEntireFile("test.txt", file.content_size, content);
                 platform.DEBUG_freeFileMemory(content);

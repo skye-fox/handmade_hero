@@ -66,13 +66,13 @@ inline fn rdtsc() usize {
 // These are NOT for doing anything in the shipping game - they are
 // blocking and the write doesn't protect against lost data!
 
-pub fn DEBUG_readEntireFile(file_name: [*:0]const u8) DEBUGReadFileResult {
+pub fn DEBUG_readEntireFile(file_path: [*:0]const u8) DEBUGReadFileResult {
     var result = DEBUGReadFileResult{
         .content_size = 0,
         .content = null,
     };
 
-    const file_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_READ, fs.FILE_SHARE_READ, null, fs.OPEN_EXISTING, fs.FILE_ATTRIBUTE_NORMAL, null);
+    const file_handle: foundation.HANDLE = fs.CreateFileA(file_path, fs.FILE_GENERIC_READ, fs.FILE_SHARE_READ, null, fs.OPEN_EXISTING, fs.FILE_ATTRIBUTE_NORMAL, null);
     if (file_handle != foundation.INVALID_HANDLE_VALUE) {
         var file_size: foundation.LARGE_INTEGER = undefined;
         if (zig32.zig.SUCCEEDED(fs.GetFileSizeEx(file_handle, &file_size))) {
@@ -81,10 +81,11 @@ pub fn DEBUG_readEntireFile(file_name: [*:0]const u8) DEBUGReadFileResult {
             result.content = zig32_mem.VirtualAlloc(null, file_size32, reserve_and_commit, zig32_mem.PAGE_READWRITE);
             if (result.content) |content| {
                 var bytes_read: win.DWORD = 0;
-                if (zig32.zig.SUCCEEDED(fs.ReadFile(file_handle, result.content, file_size32, &bytes_read, null)) and file_size32 == bytes_read) {
+                if (zig32.zig.SUCCEEDED(fs.ReadFile(file_handle, content, file_size32, &bytes_read, null)) and file_size32 == bytes_read) {
                     std.debug.print("File read successfully.\n", .{});
                     result.content_size = file_size32;
                 } else {
+                    std.debug.print("Failed to read.\n", .{});
                     DEBUG_freeFileMemory(content);
                     result.content = null;
                 }
