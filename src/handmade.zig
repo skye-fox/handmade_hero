@@ -175,8 +175,12 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         // NOTE: Digital
     }
 
+    if (input0.button.input.move_down.ended_down) {
+        game_state.green_offset -= 1;
+    }
+
     if (input0.button.input.action_down.ended_down) {
-        game_state.green_offset += 1;
+        game_state.green_offset -= 1;
     }
 
     gameOutputSound(sound_buffer, game_state.tone_hz);

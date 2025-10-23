@@ -131,16 +131,13 @@ pub fn DEBUG_writeEntireFile(file_name: [*:0]const u8, memory_size: u32, memory:
 fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) void {
     var message: wam.MSG = undefined;
     while (wam.PeekMessageA(&message, null, 0, 0, wam.PM_REMOVE) != 0) {
-        if (message.message == wam.WM_QUIT) {
-            global_running = false;
-        }
-        const vk_code: kbam.VIRTUAL_KEY = @enumFromInt(message.wParam);
-        const was_down: bool = ((message.lParam & (1 << 30)) != 0);
-        const is_down: bool = ((message.lParam & (1 << 31)) == 0);
-
         switch (message.message) {
             wam.WM_QUIT => global_running = false,
             wam.WM_SYSKEYDOWN, wam.WM_SYSKEYUP, wam.WM_KEYDOWN, wam.WM_KEYUP => {
+                const vk_code: kbam.VIRTUAL_KEY = @enumFromInt(message.wParam);
+                const was_down: bool = ((message.lParam & (1 << 30)) != 0);
+                const is_down: bool = ((message.lParam & (1 << 31)) == 0);
+
                 if (was_down != is_down) {
                     switch (vk_code) {
                         .W => win32ProcessKeyboardMessage(&keyboard_controller.button.input.move_up, is_down),
@@ -151,7 +148,7 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
                         .E => win32ProcessKeyboardMessage(&keyboard_controller.button.input.right_shoulder, is_down),
                         .UP => {},
                         .LEFT => {},
-                        .DOWN => {},
+                        .DOWN => win32ProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
                         .RIGHT => {},
                         .SPACE => {},
                         // .F4 => {},
@@ -182,8 +179,10 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
 }
 
 fn win32ProcessKeyboardMessage(new_state: *game.GameButtonState, is_down: bool) void {
+    std.debug.print("is_down: {}, transition: {}\n", .{ is_down, new_state.half_transition_count });
     new_state.ended_down = is_down;
     new_state.half_transition_count += 1;
+    std.debug.print("is_down: {}, transition: {}\n", .{ is_down, new_state.half_transition_count });
 }
 
 fn win32ProcessXInputDigitalButton(old_state: *game.GameButtonState, new_state: *game.GameButtonState, xinput_button_state: win.DWORD, button_bit: win.DWORD) void {
@@ -453,6 +452,7 @@ pub fn run() !void {
 
                 global_running = true;
                 while (global_running) {
+                    // BUG: Keyboard isn't working correctl.
                     const keyboard_controller: *game.GameControllerInput = &new_input.controllers[0];
                     const zero_controller = std.mem.zeroInit(game.GameControllerInput, .{});
                     keyboard_controller.* = zero_controller;
