@@ -179,6 +179,7 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
 }
 
 fn win32ProcessKeyboardMessage(new_state: *game.GameButtonState, is_down: bool) void {
+    std.debug.assert(new_state.ended_down != is_down);
     std.debug.print("is_down: {}, transition: {}\n", .{ is_down, new_state.half_transition_count });
     new_state.ended_down = is_down;
     new_state.half_transition_count += 1;
@@ -452,12 +453,18 @@ pub fn run() !void {
 
                 global_running = true;
                 while (global_running) {
-                    // BUG: Keyboard isn't working correctl.
-                    const keyboard_controller: *game.GameControllerInput = &new_input.controllers[0];
+                    // BUG: Keyboard isn't working correctly.
+                    const old_keyboard_controller: *game.GameControllerInput = &old_input.controllers[0];
+                    const new_keyboard_controller: *game.GameControllerInput = &new_input.controllers[0];
                     const zero_controller = std.mem.zeroInit(game.GameControllerInput, .{});
-                    keyboard_controller.* = zero_controller;
+                    new_keyboard_controller.* = zero_controller;
 
-                    win32ProcessPendingMessages(keyboard_controller);
+                    var button_index: u32 = 0;
+                    while (button_index < new_keyboard_controller.button.buttons.len) : (button_index += 1) {
+                        new_keyboard_controller.button.buttons[button_index].ended_down = old_keyboard_controller.button.buttons[button_index].ended_down;
+                    }
+
+                    win32ProcessPendingMessages(new_keyboard_controller);
 
                     var max_controller_count = controller.XUSER_MAX_COUNT;
                     if (max_controller_count > new_input.controllers.len - 1) {
@@ -466,8 +473,9 @@ pub fn run() !void {
 
                     var controller_index: win.DWORD = 0;
                     while (controller_index < max_controller_count) : (controller_index += 1) {
-                        const old_controller: *game.GameControllerInput = &old_input.controllers[controller_index];
-                        const new_controller: *game.GameControllerInput = &new_input.controllers[controller_index];
+                        const our_controller_index = controller_index + 1;
+                        const old_controller: *game.GameControllerInput = &old_input.controllers[our_controller_index];
+                        const new_controller: *game.GameControllerInput = &new_input.controllers[our_controller_index];
 
                         var controller_state = std.mem.zeroInit(controller.XINPUT_STATE, .{});
 
