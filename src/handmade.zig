@@ -97,6 +97,13 @@ pub fn teraBytes(value: u32) u64 {
     return value * std.math.pow(u64, 1024, 4);
 }
 
+pub inline fn getController(input: *GameInput, controller_index: u32) *GameControllerInput {
+    std.debug.assert(controller_index < input.controllers.len);
+
+    const result: *GameControllerInput = &input.controllers[controller_index];
+    return result;
+}
+
 fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const tone_volume: i32 = 3000;
     const wave_period: i32 = @divTrunc(sound_buffer.samples_per_second, tone_hz);
@@ -145,6 +152,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
 
 pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer) !void {
     if (debug) {
+        std.debug.assert((&input.controllers[0].button.input.terminator - &input.controllers[0].button.buttons[0]) == input.controllers[0].button.buttons.len);
         std.debug.assert(@sizeOf(GameMemory) <= memory.permanent_storage_size);
     }
 
@@ -166,21 +174,31 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         }
     }
 
-    const input0: *GameControllerInput = &input.controllers[0];
-    if (input0.is_analog) {
-        // NOTE: Analog
-        game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * input0.stick_average_x));
-        game_state.blue_offset += @as(i32, @intFromFloat(4.0 * input0.stick_average_y));
-    } else {
-        // NOTE: Digital
-    }
+    var controller_index: u32 = 0;
+    while (controller_index < input.controllers.len) : (controller_index += 1) {
+        const controller: *GameControllerInput = getController(input, controller_index);
+        if (controller.is_analog) {
+            // NOTE: Analog
+            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.stick_average_x));
+            game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.stick_average_y));
+        } else {
+            // NOTE: Digital
+            if (controller.button.input.move_left.ended_down) {
+                game_state.blue_offset -= 1;
+            }
 
-    if (input0.button.input.move_down.ended_down) {
-        game_state.green_offset -= 1;
-    }
+            if (controller.button.input.move_right.ended_down) {
+                game_state.blue_offset += 1;
+            }
+        }
 
-    if (input0.button.input.action_down.ended_down) {
-        game_state.green_offset -= 1;
+        if (controller.button.input.move_down.ended_down) {
+            game_state.green_offset -= 1;
+        }
+
+        if (controller.button.input.action_down.ended_down) {
+            game_state.green_offset -= 1;
+        }
     }
 
     gameOutputSound(sound_buffer, game_state.tone_hz);
