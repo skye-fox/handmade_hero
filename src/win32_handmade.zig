@@ -48,9 +48,9 @@ const reserve_and_commit = zig32_mem.VIRTUAL_ALLOCATION_TYPE{ .RESERVE = 1, .COM
 var instance: foundation.HINSTANCE = undefined;
 
 var global_running = false;
-
 var global_back_buffer = std.mem.zeroInit(Win32OffscreenBuffer, .{});
 var global_secondary_buffer: ?*d_sound.IDirectSoundBuffer8 = undefined;
+var global_perf_count_frequency: i64 = 0;
 
 inline fn rdtsc() usize {
     var a: u32 = undefined;
@@ -127,6 +127,17 @@ pub fn DEBUG_writeEntireFile(file_name: [*:0]const u8, memory_size: u32, memory:
 }
 
 // NOTE: END-->
+
+inline fn win32GetWallClock() foundation.LARGE_INTEGER {
+    var result: foundation.LARGE_INTEGER = undefined;
+    _ = perf.QueryPerformanceCounter(&result);
+    return result;
+}
+
+inline fn win32GetSecondsElapsed(start: foundation.LARGE_INTEGER, end: foundation.LARGE_INTEGER) f32 {
+    const result: f32 = @as(f32, @floatFromInt(end.QuadPart - start.QuadPart)) / @as(f32, @floatFromInt(global_perf_count_frequency));
+    return result;
+}
 
 fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) void {
     var message: wam.MSG = undefined;
@@ -370,7 +381,11 @@ fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: f
 pub fn run() !void {
     var perf_count_frequency_result: foundation.LARGE_INTEGER = undefined;
     _ = perf.QueryPerformanceFrequency(&perf_count_frequency_result);
-    const perf_count_frequency: i64 = perf_count_frequency_result.QuadPart;
+    global_perf_count_frequency = perf_count_frequency_result.QuadPart;
+
+    // NOTE:(Casey): Set the windows scheduler granularity to 1ms.
+    const desired_scheduler_ms = 1;
+    const sleep_is_granular: bool = zig32.media.timeBeginPeriod(desired_scheduler_ms) == zig32.everything.TIMERR_NOERROR;
 
     win32ResizeDIBSection(&global_back_buffer, 1280, 720);
 
@@ -380,6 +395,10 @@ pub fn run() !void {
     window_class.lpfnWndProc = win32MainWindowCallback;
     window_class.hInstance = instance;
     window_class.lpszClassName = "Handmade Hero";
+
+    const monitor_refresh_hz: u32 = 60;
+    const game_update_hz: u32 = monitor_refresh_hz / 2;
+    const target_seconds_per_frame: f32 = 1.0 / @as(f32, @floatFromInt(game_update_hz));
 
     if (wam.RegisterClassA(&window_class) != 0) {
         const window_handle = wam.CreateWindowExA(
@@ -443,8 +462,8 @@ pub fn run() !void {
                 var new_input: *game.GameInput = &input[0];
                 var old_input: *game.GameInput = &input[1];
 
-                var last_counter: foundation.LARGE_INTEGER = undefined;
-                _ = perf.QueryPerformanceCounter(&last_counter);
+                var last_counter: foundation.LARGE_INTEGER = win32GetWallClock();
+
                 var last_cycle_count: i64 = @intCast(rdtsc());
 
                 global_running = true;
@@ -478,13 +497,11 @@ pub fn run() !void {
                             // Controller available
                             const pad = &controller_state.Gamepad;
 
-                            new_controller.is_analog = true;
-
                             new_controller.left_stick_average_x = win32ProcessXInputStickValue(pad.sThumbLX, controller.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
                             new_controller.left_stick_average_y = win32ProcessXInputStickValue(pad.sThumbLY, controller.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
 
-                            new_controller.right_stick_average_x = win32ProcessXInputStickValue(pad.sThumbRX, controller.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-                            new_controller.right_stick_average_y = win32ProcessXInputStickValue(pad.sThumbRY, controller.XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                            new_controller.right_stick_average_x = win32ProcessXInputStickValue(pad.sThumbRX, controller.XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+                            new_controller.right_stick_average_y = win32ProcessXInputStickValue(pad.sThumbRY, controller.XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
 
                             if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
                                 new_controller.is_analog = true;
@@ -666,18 +683,47 @@ pub fn run() !void {
                         win32FillSoundBuffer(&sound_output, &game_sound_output_buffer, byte_to_lock, bytes_to_write);
                     }
 
+                    const work_counter: foundation.LARGE_INTEGER = win32GetWallClock();
+                    const work_seconds_elapsed: f32 = win32GetSecondsElapsed(last_counter, work_counter);
+
+                    const counter_elapsed: i64 = work_counter.QuadPart - last_counter.QuadPart;
+                    var seconds_elapsed_for_frame: f32 = work_seconds_elapsed;
+
+                    if (seconds_elapsed_for_frame < target_seconds_per_frame) {
+                        if (sleep_is_granular) {
+                            const sleep_ms: win.DWORD = @intFromFloat(1000.0 * (target_seconds_per_frame - seconds_elapsed_for_frame));
+                            if (sleep_ms > 0) {
+                                zig32.system.threading.Sleep(sleep_ms);
+                            }
+                        }
+
+                        const test_seconds_elapsed_for_frame = win32GetSecondsElapsed(last_counter, win32GetWallClock());
+                        std.debug.assert(test_seconds_elapsed_for_frame < target_seconds_per_frame);
+
+                        while (seconds_elapsed_for_frame < target_seconds_per_frame) {
+                            seconds_elapsed_for_frame = win32GetSecondsElapsed(last_counter, win32GetWallClock());
+                        }
+                    } else {
+                        // TODO: (CASEY) Missed Frame Rate
+                        // TODO: Logging
+                    }
+
                     const dimension = win32GetWindowDimension(window);
                     win32DisplayBufferInWindow(&global_back_buffer, device_context.?, dimension.width, dimension.height);
 
+                    const end_counter: foundation.LARGE_INTEGER = win32GetWallClock();
+                    last_counter = end_counter;
+
+                    const temp: *game.GameInput = new_input;
+                    new_input = old_input;
+                    old_input = temp;
+
                     const end_cycle_count: i64 = @intCast(rdtsc());
-
-                    var end_counter: foundation.LARGE_INTEGER = undefined;
-                    _ = perf.QueryPerformanceCounter(&end_counter);
-
                     const cycles_elapsed: i64 = end_cycle_count - last_cycle_count;
-                    const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
-                    const ms_per_frame: f32 = (1000.0 * @as(f32, @floatFromInt(counter_elapsed))) / @as(f32, @floatFromInt(perf_count_frequency));
-                    const frames_per_second: f32 = @as(f32, @floatFromInt(perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
+                    last_cycle_count = end_cycle_count;
+
+                    const ms_per_frame: f32 = 1000.0 * win32GetSecondsElapsed(last_counter, end_counter);
+                    const frames_per_second: f32 = @as(f32, @floatFromInt(global_perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
                     const mega_cycles_per_frame: f32 = (@as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0));
 
                     _ = ms_per_frame;
@@ -685,12 +731,6 @@ pub fn run() !void {
                     _ = mega_cycles_per_frame;
                     // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
 
-                    last_counter = end_counter;
-                    last_cycle_count = end_cycle_count;
-
-                    const temp: *game.GameInput = new_input;
-                    new_input = old_input;
-                    old_input = temp;
                 }
             } else {
                 // TODO: Logging
