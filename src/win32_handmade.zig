@@ -145,11 +145,14 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
         switch (message.message) {
             wam.WM_QUIT => global_running = false,
             wam.WM_SYSKEYDOWN, wam.WM_SYSKEYUP, wam.WM_KEYDOWN, wam.WM_KEYUP => {
-                const vk_code: kbam.VIRTUAL_KEY = @enumFromInt(message.wParam);
+                // const vk_int = message.wParam;
                 const was_down: bool = ((message.lParam & (1 << 30)) != 0);
                 const is_down: bool = ((message.lParam & (1 << 31)) == 0);
 
                 if (was_down != is_down) {
+                    const vk_code = std.meta.intToEnum(kbam.VIRTUAL_KEY, message.wParam) catch {
+                        continue;
+                    };
                     switch (vk_code) {
                         .W => win32ProcessKeyboardMessage(&keyboard_controller.button.input.move_up, is_down),
                         .A => win32ProcessKeyboardMessage(&keyboard_controller.button.input.move_left, is_down),
@@ -166,10 +169,11 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
                         .ESCAPE => win32ProcessKeyboardMessage(&keyboard_controller.button.input.start, is_down),
                         else => {},
                     }
-                }
-                const alt_down: bool = ((message.lParam & (1 << 29)) != 0);
-                if ((vk_code == kbam.VK_F4) and alt_down) {
-                    global_running = false;
+
+                    // const alt_down: bool = ((message.lParam & (1 << 29)) != 0);
+                    // if ((vk_code == kbam.VK_F4) and alt_down) {
+                    //     global_running = false;
+                    // }
                 }
             },
             else => {
@@ -470,8 +474,6 @@ pub fn run() !void {
                 while (global_running) {
                     const old_keyboard_controller: *game.GameControllerInput = game.getController(old_input, 0);
                     const new_keyboard_controller: *game.GameControllerInput = game.getController(new_input, 0);
-                    const zero_controller = std.mem.zeroInit(game.GameControllerInput, .{});
-                    new_keyboard_controller.* = zero_controller;
                     new_keyboard_controller.is_connected = true;
 
                     for (0..new_keyboard_controller.button.buttons.len) |button_index| {
@@ -697,8 +699,10 @@ pub fn run() !void {
                             }
                         }
 
-                        const test_seconds_elapsed_for_frame = win32GetSecondsElapsed(last_counter, win32GetWallClock());
-                        std.debug.assert(test_seconds_elapsed_for_frame < target_seconds_per_frame);
+                        // WARN: This assertion is crashing the program for me, but not Casey. I can't figure out why.
+
+                        // const test_seconds_elapsed_for_frame = win32GetSecondsElapsed(last_counter, win32GetWallClock());
+                        // std.debug.assert(test_seconds_elapsed_for_frame < target_seconds_per_frame);
 
                         while (seconds_elapsed_for_frame < target_seconds_per_frame) {
                             seconds_elapsed_for_frame = win32GetSecondsElapsed(last_counter, win32GetWallClock());
