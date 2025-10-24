@@ -165,15 +165,15 @@ fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) v
                         .DOWN => win32ProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
                         .RIGHT => win32ProcessKeyboardMessage(&keyboard_controller.button.input.action_right, is_down),
                         .SPACE => {},
-                        // .F4 => {},
+                        .F4 => {
+                            const alt_down: bool = ((message.lParam & (1 << 29)) != 0);
+                            if (alt_down) {
+                                global_running = false;
+                            }
+                        },
                         .ESCAPE => win32ProcessKeyboardMessage(&keyboard_controller.button.input.start, is_down),
                         else => {},
                     }
-
-                    // const alt_down: bool = ((message.lParam & (1 << 29)) != 0);
-                    // if ((vk_code == kbam.VK_F4) and alt_down) {
-                    //     global_running = false;
-                    // }
                 }
             },
             else => {
