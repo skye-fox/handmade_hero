@@ -27,6 +27,7 @@ const Win32OffscreenBuffer = struct {
     width: i32,
     height: i32,
     pitch: i32,
+    bytes_per_pixel: i32,
 };
 
 const Win32WindowDimension = struct {
@@ -137,6 +138,30 @@ inline fn win32GetWallClock() foundation.LARGE_INTEGER {
 inline fn win32GetSecondsElapsed(start: foundation.LARGE_INTEGER, end: foundation.LARGE_INTEGER) f32 {
     const result: f32 = @as(f32, @floatFromInt(end.QuadPart - start.QuadPart)) / @as(f32, @floatFromInt(global_perf_count_frequency));
     return result;
+}
+
+fn win32DebugDrawVertical(buffer: *Win32OffscreenBuffer, x: u32, top: u32, bottom: u32, color: u32) void {
+    var pixel: [*]u8 = @as([*]u8, @ptrCast(buffer.memory)) + x * @as(u32, @intCast(buffer.bytes_per_pixel)) + top * @as(u32, @intCast(buffer.pitch));
+    for (top..bottom) |_| {
+        @as([*]u32, @ptrCast(@alignCast(pixel)))[0] = color;
+        pixel += @as(u32, @intCast(global_back_buffer.pitch));
+    }
+}
+
+fn win32DebugSyncDisplay(back_buffer: *Win32OffscreenBuffer, sound_output: *Win32SoundOutput, last_play_cursor: []win.DWORD, last_play_cursor_count: u32) void {
+    const pad_x: u32 = 16;
+    const pad_y: u32 = 16;
+    const top = pad_y;
+    const bottom: u32 = @as(u32, @intCast(back_buffer.height)) - pad_y;
+
+    const c: f32 = @as(f32, @floatFromInt(back_buffer.width - 2 * pad_x)) / @as(f32, @floatFromInt(sound_output.secondary_buffer_size));
+    for (0..last_play_cursor_count) |index| {
+        const this_play_cursor: win.DWORD = last_play_cursor[index];
+        std.debug.assert(this_play_cursor < sound_output.secondary_buffer_size);
+        const x_f32: f32 = c * @as(f32, @floatFromInt(this_play_cursor));
+        const x: u32 = pad_x + @as(u32, @intFromFloat(x_f32));
+        win32DebugDrawVertical(back_buffer, x, top, bottom, 0xFFFFFFFF);
+    }
 }
 
 fn win32ProcessPendingMessages(keyboard_controller: *game.GameControllerInput) void {
@@ -344,12 +369,12 @@ fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32)
     buffer.info.bmiHeader.biBitCount = 32;
     buffer.info.bmiHeader.biCompression = gdi.BI_RGB;
 
-    const bytes_per_pixel = 4;
+    buffer.bytes_per_pixel = 4;
 
-    const bitmap_memory_size = (buffer.width * buffer.height) * bytes_per_pixel;
+    const bitmap_memory_size = (buffer.width * buffer.height) * buffer.bytes_per_pixel;
     buffer.memory = zig32_mem.VirtualAlloc(null, @as(usize, @intCast(bitmap_memory_size)), reserve_and_commit, zig32_mem.PAGE_READWRITE);
 
-    buffer.pitch = buffer.width * bytes_per_pixel;
+    buffer.pitch = buffer.width * buffer.bytes_per_pixel;
 }
 
 fn win32DisplayBufferInWindow(buffer: *Win32OffscreenBuffer, device_context: gdi.HDC, window_width: i32, window_height: i32) void {
@@ -423,11 +448,6 @@ pub fn run() !void {
         if (window_handle) |window| {
             const device_context = gdi.GetDC(window);
 
-            // graphics test
-            // var x_offset: i32 = 0;
-            // var y_offset: i32 = 0;
-
-            //sound test
             var sound_output: Win32SoundOutput = .{
                 .samples_per_second = 48000,
                 .bytes_per_sample = @sizeOf(i16) * 2,
@@ -467,6 +487,8 @@ pub fn run() !void {
                 var old_input: *game.GameInput = &input[1];
 
                 var last_counter: foundation.LARGE_INTEGER = win32GetWallClock();
+
+                var debug_last_play_cursor = std.mem.zeroes([game_update_hz]win.DWORD);
 
                 var last_cycle_count: i64 = @intCast(rdtsc());
 
@@ -639,13 +661,6 @@ pub fn run() !void {
                         }
                     }
 
-                    // NOTE: Example of how to do XInput vibration
-
-                    // var vibration = std.mem.zeroInit(controller.XINPUT_VIBRATION, .{});
-                    // vibration.wLeftMotorSpeed = 60000;
-                    // vibration.wRightMotorSpeed = 60000;
-                    // _ = controller.XInputSetState(0, &vibration);
-
                     var byte_to_lock: win.DWORD = 0;
                     var bytes_to_write: win.DWORD = 0;
                     var target_cursor: win.DWORD = 0;
@@ -712,11 +727,20 @@ pub fn run() !void {
                         // TODO: Logging
                     }
 
-                    const dimension = win32GetWindowDimension(window);
-                    win32DisplayBufferInWindow(&global_back_buffer, device_context.?, dimension.width, dimension.height);
-
                     const end_counter: foundation.LARGE_INTEGER = win32GetWallClock();
                     last_counter = end_counter;
+
+                    const dimension = win32GetWindowDimension(window);
+
+                    if (debug) {
+                        win32DebugSyncDisplay(&global_back_buffer, &sound_output, &debug_last_play_cursor, debug_last_play_cursor.len);
+                    }
+                    win32DisplayBufferInWindow(&global_back_buffer, device_context.?, dimension.width, dimension.height);
+
+                    if (debug) {
+                        _ = global_secondary_buffer.?.IDirectSoundBuffer.GetCurrentPosition(&play_cursor, &write_cursor);
+                        play_cursor = debug_last_play_cursor[0];
+                    }
 
                     const temp: *game.GameInput = new_input;
                     new_input = old_input;
