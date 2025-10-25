@@ -113,6 +113,7 @@ pub fn DEBUG_writeEntireFile(file_name: [*:0]const u8, memory_size: u32, memory:
     var result = false;
 
     const file_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_WRITE, fs.FILE_SHARE_NONE, null, fs.CREATE_ALWAYS, fs.FILE_ATTRIBUTE_NORMAL, null);
+    defer zig32.zig.closeHandle(file_handle);
     if (file_handle != foundation.INVALID_HANDLE_VALUE) {
         var bytes_written: win.DWORD = 0;
         if (zig32.zig.SUCCEEDED(fs.WriteFile(file_handle, memory, memory_size, &bytes_written, null))) {
@@ -249,8 +250,8 @@ fn win32ClearBuffer(sound_output: *Win32SoundOutput) void {
                 dest_sample += 1;
             }
         }
+        _ = global_secondary_buffer.?.IDirectSoundBuffer.Unlock(region_one, region_one_size, region_two, region_two_size);
     }
-    _ = global_secondary_buffer.?.IDirectSoundBuffer.Unlock(region_one, region_one_size, region_two, region_two_size);
 }
 
 fn win32FillSoundBuffer(sound_output: *Win32SoundOutput, source_buffer: *game.GameSoundOutputBuffer, byte_to_lock: win.DWORD, bytes_to_write: win.DWORD) void {
@@ -488,7 +489,9 @@ pub fn run() !void {
 
                 var last_counter: foundation.LARGE_INTEGER = win32GetWallClock();
 
-                var debug_last_play_cursor = std.mem.zeroes([game_update_hz]win.DWORD);
+                const debug_last_play_cursor_size: u32 = game_update_hz / 2;
+                var debug_last_play_cursor = std.mem.zeroes([debug_last_play_cursor_size]win.DWORD);
+                var debug_last_play_cursor_index: u32 = 0;
 
                 var last_cycle_count: i64 = @intCast(rdtsc());
 
@@ -703,14 +706,13 @@ pub fn run() !void {
                     const work_counter: foundation.LARGE_INTEGER = win32GetWallClock();
                     const work_seconds_elapsed: f32 = win32GetSecondsElapsed(last_counter, work_counter);
 
-                    const counter_elapsed: i64 = work_counter.QuadPart - last_counter.QuadPart;
                     var seconds_elapsed_for_frame: f32 = work_seconds_elapsed;
 
                     if (seconds_elapsed_for_frame < target_seconds_per_frame) {
                         if (sleep_is_granular) {
                             const sleep_ms: win.DWORD = @intFromFloat(1000.0 * (target_seconds_per_frame - seconds_elapsed_for_frame));
                             if (sleep_ms > 0) {
-                                zig32.system.threading.Sleep(sleep_ms);
+                                zig32.system.threading.Sleep(sleep_ms - 1);
                             }
                         }
 
@@ -728,6 +730,8 @@ pub fn run() !void {
                     }
 
                     const end_counter: foundation.LARGE_INTEGER = win32GetWallClock();
+                    const ms_per_frame: f32 = 1000.0 * win32GetSecondsElapsed(last_counter, end_counter);
+                    const counter_elapsed: i64 = end_counter.QuadPart - last_counter.QuadPart;
                     last_counter = end_counter;
 
                     const dimension = win32GetWindowDimension(window);
@@ -739,7 +743,11 @@ pub fn run() !void {
 
                     if (debug) {
                         _ = global_secondary_buffer.?.IDirectSoundBuffer.GetCurrentPosition(&play_cursor, &write_cursor);
-                        play_cursor = debug_last_play_cursor[0];
+                        if (debug_last_play_cursor_index >= debug_last_play_cursor_size) {
+                            debug_last_play_cursor_index = 0;
+                        }
+                        debug_last_play_cursor[debug_last_play_cursor_index] = play_cursor;
+                        debug_last_play_cursor_index += 1;
                     }
 
                     const temp: *game.GameInput = new_input;
@@ -750,15 +758,13 @@ pub fn run() !void {
                     const cycles_elapsed: i64 = end_cycle_count - last_cycle_count;
                     last_cycle_count = end_cycle_count;
 
-                    const ms_per_frame: f32 = 1000.0 * win32GetSecondsElapsed(last_counter, end_counter);
                     const frames_per_second: f32 = @as(f32, @floatFromInt(global_perf_count_frequency)) / @as(f32, @floatFromInt(counter_elapsed));
                     const mega_cycles_per_frame: f32 = (@as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0));
 
                     _ = ms_per_frame;
                     _ = frames_per_second;
                     _ = mega_cycles_per_frame;
-                    // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_seconds, mega_cycles_per_frame });
-
+                    // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_second, mega_cycles_per_frame });
                 }
             } else {
                 // TODO: Logging
