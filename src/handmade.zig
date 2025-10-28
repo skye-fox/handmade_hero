@@ -107,6 +107,11 @@ pub inline fn getController(input: *GameInput, controller_index: usize) *GameCon
     return result;
 }
 
+pub fn getSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
+    const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
+    gameOutputSound(sound_buffer, game_state.tone_hz);
+}
+
 fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
     const tone_volume: i32 = 3000;
     const wave_period: i32 = @divTrunc(sound_buffer.samples_per_second, tone_hz);
@@ -123,6 +128,9 @@ fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
         sample_out += 1;
 
         tsine += 2.0 * std.math.pi / @as(f32, @floatFromInt(wave_period));
+        if (tsine > 2.0 * std.math.pi) {
+            tsine -= 2.0 * std.math.pi;
+        }
     }
 }
 
@@ -153,7 +161,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
     // }
 }
 
-pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer, sound_buffer: *GameSoundOutputBuffer) !void {
+pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) !void {
     std.debug.assert((&input.controllers[0].button.input.terminator - &input.controllers[0].button.buttons[0]) == input.controllers[0].button.buttons.len);
     std.debug.assert(@sizeOf(GameMemory) <= memory.permanent_storage_size);
 
@@ -200,7 +208,6 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         }
     }
 
-    gameOutputSound(sound_buffer, game_state.tone_hz);
     gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
 }
 
