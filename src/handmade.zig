@@ -167,7 +167,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
 
 pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) void {
     std.debug.assert((&input.controllers[0].button.input.terminator - &input.controllers[0].button.buttons[0]) == input.controllers[0].button.buttons.len);
-    std.debug.assert(@sizeOf(GameMemory) <= memory.permanent_storage_size);
+    std.debug.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
 
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
     if (!memory.is_initialized) {

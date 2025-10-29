@@ -15,6 +15,7 @@ const fs = @import("zigwin32").storage.file_system;
 const perf = @import("zigwin32").system.performance;
 const wam = @import("zigwin32").ui.windows_and_messaging;
 const zig32_mem = @import("zigwin32").system.memory;
+pub const UNICODE = false;
 
 pub const DEBUGReadFileResult = struct {
     content_size: u32,
@@ -152,6 +153,29 @@ pub fn debugPlatformWriteEntireFile(file_name: [*:0]const u8, memory_size: u32, 
 
 // NOTE: END-->
 
+fn catStrings(source_A_count: usize, source_A: []const u8, source_B_count: usize, source_B: []const u8, dest_count: usize, dest: [*:0]u8) void {
+    for (0..source_A_count) |i| {
+        dest[i] = source_A[i];
+    }
+    for (0..source_B_count) |i| {
+        dest[source_A_count + i] = source_B[i];
+    }
+    dest[source_A_count + source_B_count] = 0;
+    _ = dest_count;
+}
+
+fn win32GetLastWriteTime(file_name: []const u8) foundation.FILETIME {
+    var last_write_time = std.mem.zeroInit(foundation.FILETIME, .{});
+
+    var find_data: fs.WIN32_FIND_DATAA = undefined;
+    const find_handle: fs.FindFileHandle = fs.FindFirstFileA(@ptrCast(file_name), &find_data);
+    if (find_handle != -1) {
+        last_write_time = find_data.ftLastWriteTime;
+        _ = fs.FindClose(find_handle);
+    }
+    return last_write_time;
+}
+
 fn win32UnloadGameCode(game_code: *Win32GameCode) void {
     if (game_code.game_code_dll != null) {
         _ = zig32.system.library_loader.FreeLibrary(game_code.game_code_dll);
@@ -163,17 +187,13 @@ fn win32UnloadGameCode(game_code: *Win32GameCode) void {
     game_code.getSoundSamples = null;
 }
 
-fn win32LoadGameCode() Win32GameCode {
+fn win32LoadGameCode(source_dll_name: []const u8, temp_dll_name: []const u8) Win32GameCode {
     var result = std.mem.zeroInit(Win32GameCode, .{});
 
-    const source_dll = "C:/home/skyefox/dev/windows/handmade_hero/zig-out/bin/handmade_hero.dll";
-    // const source_dll = "/zig-out/handmade_hero.dll";
+    result.dll_last_write_time = win32GetLastWriteTime(source_dll_name);
+    _ = fs.CopyFileA(@ptrCast(source_dll_name), @ptrCast(temp_dll_name), 0);
 
-    const temp_dll = "C:/home/skyefox/dev/windows/handmade_hero/zig-out/bin/handmade_temp.dll";
-    // const temp_dll = "/zig-out/handmade_temp.dll";
-    _ = fs.CopyFileA(source_dll, temp_dll, 0);
-
-    result.game_code_dll = zig32.system.library_loader.LoadLibraryA(temp_dll);
+    result.game_code_dll = zig32.system.library_loader.LoadLibraryA(@ptrCast(temp_dll_name));
     if (result.game_code_dll != null) {
         result.updateAndRender = @ptrCast(zig32.system.library_loader.GetProcAddress(result.game_code_dll, "gameUpdateAndRender"));
         result.getSoundSamples = @ptrCast(zig32.system.library_loader.GetProcAddress(result.game_code_dll, "getSoundSamples"));
@@ -520,6 +540,38 @@ fn win32MainWindowCallback(window: foundation.HWND, message: win.UINT, wparam: f
 }
 
 pub fn run() !void {
+    var exe_file_path: [foundation.MAX_PATH:0]u8 = undefined;
+    const size_of_file_name = zig32.system.library_loader.GetModuleFileNameA(null, &exe_file_path, @sizeOf(@TypeOf(exe_file_path)));
+    var one_past_last_slash: [*:0]u8 = @as([*:0]u8, @ptrCast(&exe_file_path));
+    const scan: [*:0]u8 = @ptrCast(&exe_file_path);
+    for (0..size_of_file_name) |i| {
+        if (scan[i] == '\\') {
+            one_past_last_slash = scan + i + 1;
+        }
+    }
+
+    const source_game_code_dll_file_name: []const u8 = "handmade_hero.dll";
+    var source_game_code_dll_full_path: [foundation.MAX_PATH:0]u8 = undefined;
+    catStrings(
+        one_past_last_slash - @as([*:0]u8, @ptrCast(&exe_file_path)),
+        &exe_file_path,
+        source_game_code_dll_file_name.len,
+        source_game_code_dll_file_name,
+        source_game_code_dll_full_path.len,
+        &source_game_code_dll_full_path,
+    );
+
+    const temp_game_code_dll_file_name: []const u8 = "handmade_temp.dll";
+    var temp_game_code_dll_full_path: [foundation.MAX_PATH:0]u8 = undefined;
+    catStrings(
+        one_past_last_slash - @as([*:0]u8, @ptrCast(&exe_file_path)),
+        &exe_file_path,
+        temp_game_code_dll_file_name.len,
+        temp_game_code_dll_file_name,
+        temp_game_code_dll_full_path.len,
+        &temp_game_code_dll_full_path,
+    );
+
     var perf_count_frequency_result: foundation.LARGE_INTEGER = undefined;
     _ = perf.QueryPerformanceFrequency(&perf_count_frequency_result);
     global_perf_count_frequency = perf_count_frequency_result.QuadPart;
@@ -611,17 +663,14 @@ pub fn run() !void {
 
                 var last_cycle_count: i64 = @intCast(rdtsc());
 
-                var game: Win32GameCode = win32LoadGameCode();
-                var load_counter: u32 = 0;
-
+                var game: Win32GameCode = win32LoadGameCode(&source_game_code_dll_full_path, &temp_game_code_dll_full_path);
                 global_running = true;
                 while (global_running) {
-                    if (load_counter > 120) {
+                    const new_dll_write_time: foundation.FILETIME = win32GetLastWriteTime(&source_game_code_dll_full_path);
+                    if (fs.CompareFileTime(&new_dll_write_time, &game.dll_last_write_time) != 0) {
                         win32UnloadGameCode(&game);
-                        game = win32LoadGameCode();
-                        load_counter = 0;
+                        game = win32LoadGameCode(&source_game_code_dll_full_path, &temp_game_code_dll_full_path);
                     }
-                    load_counter += 1;
 
                     const old_keyboard_controller: *handmade.GameControllerInput = handmade.getController(old_input, 0);
                     const new_keyboard_controller: *handmade.GameControllerInput = handmade.getController(new_input, 0);
@@ -946,7 +995,7 @@ pub fn run() !void {
                                 marker.flip_play_cursor = play_cursor;
                                 marker.flip_write_cursor = write_cursor;
                             }
-                            const current_debug_time_marker_index: u32 = if (debug_time_marker_index == 0) debug_time_markers.len - 1 else debug_time_marker_index;
+                            const current_debug_time_marker_index: u32 = if (debug_time_marker_index == 0) (debug_time_markers.len - 1) else debug_time_marker_index;
                             win32DebugSyncDisplay(&global_back_buffer, &sound_output, &debug_time_markers, debug_time_markers.len, current_debug_time_marker_index);
                         }
 
