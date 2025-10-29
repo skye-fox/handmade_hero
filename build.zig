@@ -15,11 +15,28 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const game_module = b.createModule(.{
+        .root_source_file = b.path("src/handmade.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("handmade_hero_lib", game_module);
+
+    const lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "handmade_hero",
+        .root_module = game_module,
+    });
+    b.installArtifact(lib);
+
     exe.linkLibC();
 
-    const zigwin32 = b.dependency("zigwin32", .{});
-    const zigwin32_module = zigwin32.module("win32");
-    exe.root_module.addImport("zigwin32", zigwin32_module); // update: zig fetch --save "git+https://github.com/marlersoft/zigwin32#main"
+    if (exe.root_module.resolved_target.?.result.os.tag == .windows) {
+        const zigwin32 = b.dependency("zigwin32", .{});
+        const zigwin32_module = zigwin32.module("win32");
+        game_module.addImport("zigwin32", zigwin32_module);
+        exe.root_module.addImport("zigwin32", zigwin32_module); // update: zig fetch --save "git+https://github.com/marlersoft/zigwin32#main"
+    }
 
     if (exe.root_module.resolved_target.?.result.os.tag == .linux) {
         // Create Wayland scanner

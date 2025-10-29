@@ -11,12 +11,17 @@ pub const GameMemory = struct {
     permanent_storage: ?*anyopaque,
     transient_storage_size: u64,
     transient_storage: ?*anyopaque,
+
+    debugPlatformReadEntireFile: *const fn ([*:0]const u8) platform.DEBUGReadFileResult,
+    debugPlatformFreeFilMemory: *const fn (?*anyopaque) void,
+    debugPlatformWriteEntireFile: *const fn ([*:0]const u8, u32, ?*anyopaque) bool,
 };
 
 const GameState = struct {
     tone_hz: i32,
     blue_offset: i32,
     green_offset: i32,
+    t_sine: f32,
 };
 
 pub const GameButtonState = extern struct {
@@ -82,8 +87,6 @@ const Color = packed struct(u32) {
     alpha: u8 = 255,
 };
 
-var tsine: f32 = 0.0;
-
 pub fn kiloBytes(value: u32) u64 {
     return value * 1024;
 }
@@ -107,19 +110,19 @@ pub inline fn getController(input: *GameInput, controller_index: usize) *GameCon
     return result;
 }
 
-pub fn getSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
+pub export fn getSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
-    gameOutputSound(sound_buffer, game_state.tone_hz);
+    gameOutputSound(sound_buffer, game_state);
 }
 
-fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
+fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, game_state: *GameState) void {
     const tone_volume: i32 = 3000;
-    const wave_period: i32 = @divTrunc(sound_buffer.samples_per_second, tone_hz);
+    const wave_period: i32 = @divTrunc(sound_buffer.samples_per_second, game_state.tone_hz);
     var sample_out: [*]i16 = @ptrCast(@alignCast(sound_buffer.samples));
 
     var sample_index: u32 = 0;
     while (sample_index < sound_buffer.sample_count) : (sample_index += 1) {
-        const sin_value = @sin(tsine);
+        const sin_value = @sin(game_state.t_sine);
         const sample_value: i16 = @intFromFloat(sin_value * @as(f32, @floatFromInt(tone_volume)));
 
         sample_out[0] = sample_value;
@@ -127,9 +130,9 @@ fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, tone_hz: i32) void {
         sample_out[0] = sample_value;
         sample_out += 1;
 
-        tsine += 2.0 * std.math.pi / @as(f32, @floatFromInt(wave_period));
-        if (tsine > 2.0 * std.math.pi) {
-            tsine -= 2.0 * std.math.pi;
+        game_state.t_sine += 2.0 * std.math.pi / @as(f32, @floatFromInt(wave_period));
+        if (game_state.t_sine > 2.0 * std.math.pi) {
+            game_state.t_sine -= 2.0 * std.math.pi;
         }
     }
 }
@@ -144,7 +147,8 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
         while (x < buffer.width) : (x += 1) {
             const blue: u8 = @truncate(@abs(x +% blue_offset));
             const green: u8 = @truncate(@abs(y +% green_offset));
-            pixel[0] = .{ .blue = blue, .green = green, .red = @truncate(0) };
+            // const red: u8 = @truncate(@abs(x +% y));
+            pixel[0] = .{ .blue = blue, .green = green, .red = 0 };
             pixel += 1;
         }
         row += @intCast(buffer.pitch);
@@ -161,7 +165,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
     // }
 }
 
-pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) !void {
+pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) void {
     std.debug.assert((&input.controllers[0].button.input.terminator - &input.controllers[0].button.buttons[0]) == input.controllers[0].button.buttons.len);
     std.debug.assert(@sizeOf(GameMemory) <= memory.permanent_storage_size);
 
@@ -170,13 +174,14 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
         game_state.tone_hz = 256;
         game_state.blue_offset = 0;
         game_state.green_offset = 0;
+        game_state.t_sine = 0.0;
 
         if (debug) {
             const file_path = "src/handmade.zig";
-            const file: platform.DEBUGReadFileResult = platform.DEBUG_readEntireFile(file_path);
+            const file: platform.DEBUGReadFileResult = memory.debugPlatformReadEntireFile(file_path);
             if (file.content) |content| {
-                _ = platform.DEBUG_writeEntireFile("test.txt", file.content_size, content);
-                platform.DEBUG_freeFileMemory(content);
+                _ = memory.debugPlatformWriteEntireFile("test.txt", file.content_size, content);
+                memory.debugPlatformFreeFilMemory(content);
             }
         }
         memory.is_initialized = true;
@@ -211,6 +216,9 @@ pub fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer:
     gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
 }
 
-pub fn TEMPgameUpdateAndRender(video_buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) void {
+pub fn TEMPgameUpdateAndRender(video_buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) !void {
     gameRender(video_buffer, blue_offset, green_offset);
 }
+
+pub const UpdateAndRenderFnPtr = *const fn (*GameMemory, *GameInput, *GameOffScreenBuffer) callconv(.c) void;
+pub const GetSoundSamplesFnPtr = *const fn (*GameMemory, *GameSoundOutputBuffer) callconv(.c) void;
