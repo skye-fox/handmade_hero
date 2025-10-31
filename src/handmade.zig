@@ -117,9 +117,7 @@ pub inline fn getController(input: *GameInput, controller_index: usize) *GameCon
 
 pub export fn getSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
-    _ = sound_buffer;
-    _ = game_state;
-    // gameOutputSound(sound_buffer, game_state);
+    gameOutputSound(sound_buffer, game_state);
 }
 
 fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, game_state: *GameState) void {
@@ -182,7 +180,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
             const blue: u8 = @truncate(@abs(x +% blue_offset));
             const green: u8 = @truncate(@abs(y +% green_offset));
             // const red: u8 = @truncate(@abs(x +% y));
-            pixel[0] = .{ .blue = blue, .green = green, .red = 0 };
+            pixel[0] = .{ .blue = blue, .green = 0, .red = green };
             pixel += 1;
         }
         row += buffer.pitch;
