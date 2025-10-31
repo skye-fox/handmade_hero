@@ -22,6 +22,10 @@ const GameState = struct {
     blue_offset: i32,
     green_offset: i32,
     t_sine: f32,
+
+    player_x: i32,
+    player_y: i32,
+    t_jump: f32,
 };
 
 pub const GameButtonState = extern struct {
@@ -76,7 +80,8 @@ pub const GameOffScreenBuffer = struct {
     memory: []align(4096) u8,
     width: i32,
     height: i32,
-    pitch: i32,
+    pitch: usize,
+    bytes_per_pixel: i32,
 };
 
 const Color = packed struct(u32) {
@@ -112,7 +117,9 @@ pub inline fn getController(input: *GameInput, controller_index: usize) *GameCon
 
 pub export fn getSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
-    gameOutputSound(sound_buffer, game_state);
+    _ = sound_buffer;
+    _ = game_state;
+    // gameOutputSound(sound_buffer, game_state);
 }
 
 fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, game_state: *GameState) void {
@@ -137,6 +144,33 @@ fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, game_state: *GameState)
     }
 }
 
+fn renderPlayer(buffer: *GameOffScreenBuffer, player_x: i32, player_y: i32) void {
+    const end_of_buffer = @intFromPtr(buffer.memory.ptr) + buffer.pitch * @as(usize, @intCast(buffer.height));
+    const color: u32 = 0xFFFFFFFF;
+
+    const left = @max(player_x, 0);
+    const right = @min(player_x + 20, buffer.width);
+    const top = @max(player_y, 0);
+    const bottom = @min(player_y + 20, buffer.height);
+
+    var x = left;
+    while (x < right) : (x += 1) {
+        var pixel_ptr = @intFromPtr(buffer.memory.ptr) + @as(usize, @intCast(x)) * @as(usize, @intCast(buffer.bytes_per_pixel)) + @as(usize, @intCast(top)) * buffer.pitch;
+
+        var y: i32 = top;
+        while (y < bottom) : (y += 1) {
+            const pixel_addr = @intFromPtr(buffer.memory.ptr);
+
+            if (pixel_ptr >= pixel_addr and (pixel_ptr + 4) < end_of_buffer) {
+                const pixel: *u32 = @ptrFromInt(pixel_ptr);
+                pixel.* = color;
+            }
+
+            pixel_ptr += buffer.pitch;
+        }
+    }
+}
+
 fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) void {
     var row = @as([*]u8, @ptrCast(buffer.memory));
 
@@ -151,7 +185,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
             pixel[0] = .{ .blue = blue, .green = green, .red = 0 };
             pixel += 1;
         }
-        row += @intCast(buffer.pitch);
+        row += buffer.pitch;
     }
 
     //     Make a solid bg color
@@ -175,6 +209,8 @@ pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_
         game_state.blue_offset = 0;
         game_state.green_offset = 0;
         game_state.t_sine = 0.0;
+        game_state.player_x = 100;
+        game_state.player_y = 100;
 
         if (debug) {
             const file_path = "src/handmade.zig";
@@ -192,9 +228,8 @@ pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_
         if (controller.is_analog) {
             // NOTE: Analog
             game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_x));
-            // game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_y));
-            game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
-            game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
+            // game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
+            // game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
         } else {
             // NOTE: Digital
             if (controller.button.input.move_left.ended_down) {
@@ -208,12 +243,19 @@ pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_
                 game_state.green_offset -= 1;
             }
         }
-        if (controller.button.input.action_down.ended_down) {
-            game_state.green_offset -= 1;
+        game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
+        game_state.player_y -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
+        if (game_state.t_jump > 0) {
+            game_state.player_y += @as(i32, @intFromFloat(10.0 * @sin(std.math.pi * game_state.t_jump)));
         }
+        if (controller.button.input.action_down.ended_down) {
+            game_state.t_jump = 2.0;
+        }
+        game_state.t_jump -= 0.029;
     }
 
     gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
+    renderPlayer(video_buffer, game_state.player_x, game_state.player_y);
 }
 
 pub fn TEMPgameUpdateAndRender(video_buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) !void {

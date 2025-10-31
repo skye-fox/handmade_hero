@@ -2,3 +2,4 @@ notes/
 .zig-cache/
 zig-out/
 test.txt
+*.hmi

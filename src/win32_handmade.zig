@@ -22,6 +22,22 @@ pub const DEBUGReadFileResult = struct {
     content: ?*anyopaque,
 };
 
+const Win32State = struct {
+    game_memory_block: ?*anyopaque,
+    total_size: u64,
+
+    recording_handle: ?foundation.HANDLE,
+    input_recording_index: u32,
+
+    playback_handle: ?foundation.HANDLE,
+    input_playing_index: u32,
+};
+
+const Win32RecordedInput = struct {
+    input_count: i32,
+    input_stream: *handmade.GameInput,
+};
+
 const Win32GameCode = struct {
     game_code_dll: ?foundation.HINSTANCE,
     dll_last_write_time: foundation.FILETIME,
@@ -48,7 +64,7 @@ const Win32OffscreenBuffer = struct {
     memory: ?*anyopaque,
     width: i32,
     height: i32,
-    pitch: i32,
+    pitch: usize,
     bytes_per_pixel: i32,
 };
 
@@ -162,6 +178,56 @@ fn catStrings(source_A_count: usize, source_A: []const u8, source_B_count: usize
     }
     dest[source_A_count + source_B_count] = 0;
     _ = dest_count;
+}
+
+fn win32EndInputPlayBack(win32_state: *Win32State) void {
+    zig32.zig.closeHandle(win32_state.playback_handle.?);
+    win32_state.input_playing_index = 0;
+}
+
+fn win32BeginInputPlayBack(win32_state: *Win32State, input_playing_index: u32) void {
+    win32_state.input_playing_index = input_playing_index;
+
+    const file_name = "foo.hmi";
+    win32_state.playback_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_READ, fs.FILE_SHARE_READ, null, fs.OPEN_EXISTING, fs.FILE_ATTRIBUTE_NORMAL, null);
+
+    const bytes_to_read: win.DWORD = @intCast(win32_state.total_size);
+    std.debug.assert(win32_state.total_size == bytes_to_read);
+    var bytes_read: win.DWORD = 0;
+    _ = fs.ReadFile(win32_state.playback_handle, win32_state.game_memory_block, bytes_to_read, &bytes_read, null);
+}
+
+fn win32EndRecordingInput(win32_state: *Win32State) void {
+    zig32.zig.closeHandle(win32_state.recording_handle.?);
+    win32_state.input_recording_index = 0;
+}
+
+fn win32BeginRecordingInput(win32_state: *Win32State, input_recording_index: u32) void {
+    win32_state.input_recording_index = input_recording_index;
+
+    const file_name = "foo.hmi";
+    win32_state.recording_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_WRITE, fs.FILE_SHARE_NONE, null, fs.CREATE_ALWAYS, fs.FILE_ATTRIBUTE_NORMAL, null);
+
+    const bytes_to_write: win.DWORD = @intCast(win32_state.total_size);
+    std.debug.assert(win32_state.total_size == bytes_to_write);
+    var bytes_written: win.DWORD = 0;
+    _ = fs.WriteFile(win32_state.recording_handle, win32_state.game_memory_block, bytes_to_write, &bytes_written, null);
+}
+
+fn win32RecordInput(win32_state: *Win32State, new_input: *handmade.GameInput) void {
+    var bytes_written: win.DWORD = 0;
+    _ = fs.WriteFile(win32_state.recording_handle, new_input, @sizeOf(handmade.GameInput), &bytes_written, null);
+}
+
+fn win32PlayBackInput(win32_state: *Win32State, new_input: *handmade.GameInput) void {
+    var bytes_read: win.DWORD = 0;
+    if (zig32.zig.SUCCEEDED(fs.ReadFile(win32_state.playback_handle, new_input, @sizeOf(handmade.GameInput), &bytes_read, null))) {
+        if (bytes_read == 0) {
+            const playing_index = win32_state.input_playing_index;
+            win32EndInputPlayBack(win32_state);
+            win32BeginInputPlayBack(win32_state, playing_index);
+        }
+    }
 }
 
 fn win32GetLastWriteTime(file_name: []const u8) foundation.FILETIME {
@@ -291,7 +357,7 @@ fn win32DebugSyncDisplay(back_buffer: *Win32OffscreenBuffer, sound_output: *Win3
     }
 }
 
-fn win32ProcessPendingMessages(keyboard_controller: *handmade.GameControllerInput) void {
+fn win32ProcessPendingMessages(win32_state: *Win32State, keyboard_controller: *handmade.GameControllerInput) void {
     var message: wam.MSG = undefined;
     while (wam.PeekMessageA(&message, null, 0, 0, wam.PM_REMOVE) != 0) {
         switch (message.message) {
@@ -324,6 +390,16 @@ fn win32ProcessPendingMessages(keyboard_controller: *handmade.GameControllerInpu
                             }
                         },
                         .ESCAPE => win32ProcessKeyboardMessage(&keyboard_controller.button.input.start, is_down),
+                        .L => {
+                            if (is_down) {
+                                if (win32_state.input_recording_index == 0) {
+                                    win32BeginRecordingInput(win32_state, 1);
+                                } else {
+                                    win32EndRecordingInput(win32_state);
+                                    win32BeginInputPlayBack(win32_state, 1);
+                                }
+                            }
+                        },
                         .P => {
                             if (debug_mode) {
                                 if (is_down) global_pause = !global_pause;
@@ -506,7 +582,7 @@ fn win32ResizeDIBSection(buffer: *Win32OffscreenBuffer, width: i32, height: i32)
     const bitmap_memory_size = (buffer.width * buffer.height) * buffer.bytes_per_pixel;
     buffer.memory = zig32_mem.VirtualAlloc(null, @as(usize, @intCast(bitmap_memory_size)), reserve_and_commit, zig32_mem.PAGE_READWRITE);
 
-    buffer.pitch = buffer.width * buffer.bytes_per_pixel;
+    buffer.pitch = @as(usize, @intCast(buffer.width)) * @as(usize, @intCast(buffer.bytes_per_pixel));
 }
 
 fn win32DisplayBufferInWindow(buffer: *Win32OffscreenBuffer, device_context: gdi.HDC, window_width: i32, window_height: i32) void {
@@ -624,6 +700,8 @@ pub fn run() !void {
             win32ClearBuffer(&sound_output);
             _ = global_secondary_buffer.?.IDirectSoundBuffer.Play(0, 0, d_sound.DSBPLAY_LOOPING);
 
+            var win32_state = std.mem.zeroInit(Win32State, .{});
+
             const samples: ?[*]i16 = @ptrCast(@alignCast(zig32_mem.VirtualAlloc(null, sound_output.secondary_buffer_size, reserve_and_commit, zig32_mem.PAGE_READWRITE)));
 
             const base_address: ?*anyopaque = if (debug_mode) @ptrFromInt(handmade.teraBytes(2)) else null;
@@ -640,10 +718,11 @@ pub fn run() !void {
                 .debugPlatformWriteEntireFile = debugPlatformWriteEntireFile,
             };
             game_memory.permanent_storage_size = handmade.megaBytes(64);
-            game_memory.transient_storage_size = handmade.gigaBytes(4);
+            game_memory.transient_storage_size = handmade.gigaBytes(1);
 
-            const total_size: u64 = game_memory.permanent_storage_size + game_memory.transient_storage_size;
-            game_memory.permanent_storage = @ptrCast(@alignCast(zig32_mem.VirtualAlloc(base_address, total_size, reserve_and_commit, zig32_mem.PAGE_READWRITE)));
+            win32_state.total_size = game_memory.permanent_storage_size + game_memory.transient_storage_size;
+            win32_state.game_memory_block = @ptrCast(@alignCast(zig32_mem.VirtualAlloc(base_address, win32_state.total_size, reserve_and_commit, zig32_mem.PAGE_READWRITE)));
+            game_memory.permanent_storage = win32_state.game_memory_block;
             game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.permanent_storage_size;
 
             if (samples != null and game_memory.permanent_storage != null and game_memory.transient_storage != null) {
@@ -680,7 +759,7 @@ pub fn run() !void {
                         new_keyboard_controller.button.buttons[button_index].ended_down = old_keyboard_controller.button.buttons[button_index].ended_down;
                     }
 
-                    win32ProcessPendingMessages(new_keyboard_controller);
+                    win32ProcessPendingMessages(&win32_state, new_keyboard_controller);
 
                     if (!global_pause) {
                         var max_controller_count = controller.XUSER_MAX_COUNT;
@@ -846,7 +925,15 @@ pub fn run() !void {
                             .width = global_back_buffer.width,
                             .height = global_back_buffer.height,
                             .pitch = global_back_buffer.pitch,
+                            .bytes_per_pixel = global_back_buffer.bytes_per_pixel,
                         };
+
+                        if (win32_state.input_recording_index != 0) {
+                            win32RecordInput(&win32_state, new_input);
+                        }
+                        if (win32_state.input_playing_index != 0) {
+                            win32PlayBackInput(&win32_state, new_input);
+                        }
 
                         if (game.updateAndRender) |updateAndRender| updateAndRender(&game_memory, new_input, &buffer);
 
