@@ -7,14 +7,18 @@ const platform = if (builtin.os.tag == .windows) @import("win32_handmade.zig");
 
 pub const GameMemory = struct {
     is_initialized: bool,
-    permanent_storage_size: u64,
+    permanent_storage_size: usize,
     permanent_storage: ?*anyopaque,
-    transient_storage_size: u64,
+    transient_storage_size: usize,
     transient_storage: ?*anyopaque,
 
-    debugPlatformReadEntireFile: *const fn ([*:0]const u8) platform.DEBUGReadFileResult,
-    debugPlatformFreeFilMemory: *const fn (?*anyopaque) void,
-    debugPlatformWriteEntireFile: *const fn ([*:0]const u8, u32, ?*anyopaque) bool,
+    debugPlatformReadEntireFile: *const fn (*ThreadContext, [*:0]const u8) platform.DEBUGReadFileResult,
+    debugPlatformFreeFilMemory: *const fn (*ThreadContext, ?*anyopaque) void,
+    debugPlatformWriteEntireFile: *const fn (*ThreadContext, [*:0]const u8, u32, ?*anyopaque) bool,
+};
+
+pub const ThreadContext = struct {
+    placeholder: u32,
 };
 
 const GameState = struct {
@@ -68,7 +72,13 @@ pub const GameControllerInput = extern struct {
     },
 };
 
-pub const GameInput = struct { controllers: [5]GameControllerInput };
+pub const GameInput = struct {
+    mouse_buttons: [5]GameButtonState,
+    mouse_x: i32,
+    mouse_y: i32,
+    mouse_z: i32,
+    controllers: [5]GameControllerInput,
+};
 
 pub const GameSoundOutputBuffer = struct {
     samples_per_second: i32,
@@ -115,7 +125,8 @@ pub inline fn getController(input: *GameInput, controller_index: usize) *GameCon
     return result;
 }
 
-pub export fn getSoundSamples(memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
+pub export fn getSoundSamples(thread: *ThreadContext, memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
+    _ = thread;
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
     gameOutputSound(sound_buffer, game_state);
 }
@@ -197,7 +208,7 @@ fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32)
     // }
 }
 
-pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) void {
+pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) void {
     std.debug.assert((&input.controllers[0].button.input.terminator - &input.controllers[0].button.buttons[0]) == input.controllers[0].button.buttons.len);
     std.debug.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
 
@@ -212,10 +223,10 @@ pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_
 
         if (debug) {
             const file_path = "src/handmade.zig";
-            const file: platform.DEBUGReadFileResult = memory.debugPlatformReadEntireFile(file_path);
+            const file: platform.DEBUGReadFileResult = memory.debugPlatformReadEntireFile(thread, file_path);
             if (file.content) |content| {
-                _ = memory.debugPlatformWriteEntireFile("test.txt", file.content_size, content);
-                memory.debugPlatformFreeFilMemory(content);
+                _ = memory.debugPlatformWriteEntireFile(thread, "test.txt", file.content_size, content);
+                memory.debugPlatformFreeFilMemory(thread, content);
             }
         }
         memory.is_initialized = true;
@@ -254,11 +265,20 @@ pub export fn gameUpdateAndRender(memory: *GameMemory, input: *GameInput, video_
 
     gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
     renderPlayer(video_buffer, game_state.player_x, game_state.player_y);
+
+    // mouse
+    renderPlayer(video_buffer, input.mouse_x, input.mouse_y);
+
+    for (0..input.mouse_buttons.len) |button_index| {
+        if (input.mouse_buttons[button_index].ended_down) {
+            renderPlayer(video_buffer, @as(i32, @intCast(10 + 40 * button_index)), 10);
+        }
+    }
 }
 
 pub fn TEMPgameUpdateAndRender(video_buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) !void {
     gameRender(video_buffer, blue_offset, green_offset);
 }
 
-pub const UpdateAndRenderFnPtr = *const fn (*GameMemory, *GameInput, *GameOffScreenBuffer) callconv(.c) void;
-pub const GetSoundSamplesFnPtr = *const fn (*GameMemory, *GameSoundOutputBuffer) callconv(.c) void;
+pub const UpdateAndRenderFnPtr = *const fn (*ThreadContext, *GameMemory, *GameInput, *GameOffScreenBuffer) callconv(.c) void;
+pub const GetSoundSamplesFnPtr = *const fn (*ThreadContext, *GameMemory, *GameSoundOutputBuffer) callconv(.c) void;
