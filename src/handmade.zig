@@ -3,7 +3,13 @@ const debug = @import("builtin").mode == @import("std").builtin.OptimizeMode.Deb
 
 const builtin = @import("builtin");
 
-const platform = if (builtin.os.tag == .windows) @import("win32_handmade.zig");
+const platform =
+    // Windows
+    if (builtin.os.tag == .windows) @import("win32_handmade.zig")
+    // Linux
+    else if (builtin.os.tag == .linux) @import("wayland_handmade.zig")
+    // Unsupported
+    else @compileError("Unsupported OS: " ++ @tagName(builtin.os.tag));
 
 pub const GameMemory = struct {
     is_initialized: bool,
@@ -276,8 +282,50 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
     }
 }
 
-pub fn TEMPgameUpdateAndRender(video_buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) !void {
-    gameRender(video_buffer, blue_offset, green_offset);
+var b_offset: i32 = 0;
+var g_offset: i32 = 0;
+
+pub fn TEMPgameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) void {
+    _ = thread;
+    _ = memory;
+
+    for (0..input.controllers.len) |controller_index| {
+        const controller: *GameControllerInput = getController(input, controller_index);
+        if (controller.is_analog) {
+            // NOTE: Analog
+            // game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_x));
+            // game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
+            // game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
+        } else {
+            // NOTE: Digital
+            if (controller.button.input.move_up.ended_down) {
+                g_offset += 1;
+            }
+
+            if (controller.button.input.move_left.ended_down) {
+                b_offset -= 1;
+            }
+
+            if (controller.button.input.move_down.ended_down) {
+                g_offset -= 1;
+            }
+
+            if (controller.button.input.move_right.ended_down) {
+                b_offset += 1;
+            }
+        }
+        // game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
+        // game_state.player_y -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
+        // if (game_state.t_jump > 0) {
+        //     game_state.player_y += @as(i32, @intFromFloat(10.0 * @sin(std.math.pi * game_state.t_jump)));
+        // }
+        // if (controller.button.input.action_down.ended_down) {
+        //     game_state.t_jump = 2.0;
+        // }
+        // game_state.t_jump -= 0.029;
+    }
+
+    gameRender(video_buffer, b_offset, g_offset);
 }
 
 pub const UpdateAndRenderFnPtr = *const fn (*ThreadContext, *GameMemory, *GameInput, *GameOffScreenBuffer) callconv(.c) void;

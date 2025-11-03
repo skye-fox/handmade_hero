@@ -20,7 +20,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("handmade_hero_lib", game_module);
 
     const lib = b.addLibrary(.{
         .linkage = .dynamic,
@@ -57,6 +56,8 @@ pub fn build(b: *std.Build) void {
 
         exe.root_module.addImport("wayland", wayland_module); // update: zig fetch --save "git+https://codeberg.org/ifreund/zig-wayland#main"
         exe.root_module.linkSystemLibrary("wayland-client", .{});
+
+        exe.linkSystemLibrary("xkbcommon");
     }
 
     b.installArtifact(exe);
