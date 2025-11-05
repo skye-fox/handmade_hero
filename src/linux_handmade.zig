@@ -6,8 +6,9 @@ const wayland = @import("wayland");
 const wl = wayland.client.wl;
 const xdg = wayland.client.xdg;
 
-const xkb = @cImport({
+const c = @cImport({
     @cInclude("xkbcommon/xkbcommon.h");
+    @cInclude("linux/input.h");
 });
 
 const handmade = @import("handmade.zig");
@@ -15,11 +16,6 @@ const handmade = @import("handmade.zig");
 pub const DEBUGReadFileResult = struct {
     content_size: u32,
     content: ?*anyopaque,
-};
-
-const WlKeyboardContext = struct {
-    context: *WlContext,
-    keyboard_controller: ?*handmade.GameControllerInput,
 };
 
 const WlReplayBuffer = struct {
@@ -91,6 +87,11 @@ const WlSoundOutput = struct {
     safety_bytes: u32,
 };
 
+const WlKeyboardContext = struct {
+    context: *WlContext,
+    keyboard_controller: ?*handmade.GameControllerInput,
+};
+
 const WlContext = struct {
     shm: ?*wl.Shm,
     compositor: ?*wl.Compositor,
@@ -99,15 +100,17 @@ const WlContext = struct {
     keyboard: ?*wl.Keyboard,
     mouse: ?*wl.Pointer,
 
-    xkb_context: ?*xkb.struct_xkb_context,
-    xkb_keymap: ?*xkb.struct_xkb_keymap,
-    xkb_state: ?*xkb.struct_xkb_state,
+    xkb_context: ?*c.struct_xkb_context,
+    xkb_keymap: ?*c.struct_xkb_keymap,
+    xkb_state: ?*c.struct_xkb_state,
 
     width: i32 = 1280,
     height: i32 = 720,
     configured: bool = false,
     running: bool = true,
 };
+
+const NUM_EVENTS: u32 = 8;
 
 var global_back_buffer = std.mem.zeroInit(WlOffscreenBuffer, .{});
 
@@ -195,22 +198,104 @@ pub fn debugPlatformWriteEntireFile(thread: *handmade.ThreadContext, file_name: 
 
 // NOTE: END-->
 
-fn wlProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sym: xkb.xkb_keysym_t, is_down: bool, context: *WlContext) void {
+// TODO: Figure out gamepad detection.
+fn wlProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_controller: *handmade.GameControllerInput) !void {
+    while (true) {
+        const event_buffer = std.mem.sliceAsBytes(events);
+        const num_bytes = std.posix.read(fd, event_buffer) catch |err| {
+            if (err == error.WouldBlock) {
+                break;
+            }
+            return err;
+        };
+
+        const num_events = num_bytes / @sizeOf(c.struct_input_event);
+
+        for (events[0..num_events]) |ev| {
+            if (ev.type == c.EV_KEY) {
+                const is_down: bool = (ev.value == 1);
+                switch (ev.code) {
+                    c.BTN_Y => wlProcessKeyboardMessage(&new_controller.button.input.action_up, is_down),
+                    c.BTN_X => wlProcessKeyboardMessage(&new_controller.button.input.action_left, is_down),
+                    c.BTN_A => wlProcessKeyboardMessage(&new_controller.button.input.action_down, is_down),
+                    c.BTN_B => wlProcessKeyboardMessage(&new_controller.button.input.action_right, is_down),
+
+                    c.BTN_DPAD_UP => wlProcessKeyboardMessage(&new_controller.button.input.move_up, is_down),
+                    c.BTN_DPAD_LEFT => wlProcessKeyboardMessage(&new_controller.button.input.move_left, is_down),
+                    c.BTN_DPAD_DOWN => wlProcessKeyboardMessage(&new_controller.button.input.move_down, is_down),
+                    c.BTN_DPAD_RIGHT => wlProcessKeyboardMessage(&new_controller.button.input.move_right, is_down),
+
+                    c.BTN_START => wlProcessKeyboardMessage(&new_controller.button.input.start, is_down),
+                    c.BTN_SELECT => wlProcessKeyboardMessage(&new_controller.button.input.back, is_down),
+
+                    c.BTN_TL => wlProcessKeyboardMessage(&new_controller.button.input.left_shoulder, is_down),
+                    c.BTN_TR => wlProcessKeyboardMessage(&new_controller.button.input.right_shoulder, is_down),
+                    else => {},
+                }
+            } else if (ev.type == c.EV_ABS) {
+                const left_deadzone: i32 = 7849;
+                const right_deadzone: i32 = 8689;
+                switch (ev.code) {
+                    c.ABS_HAT0X => {
+                        wlProcessKeyboardMessage(&new_controller.button.input.move_left, ev.value < 0);
+                        wlProcessKeyboardMessage(&new_controller.button.input.move_right, ev.value > 0);
+                    },
+
+                    c.ABS_HAT0Y => {
+                        wlProcessKeyboardMessage(&new_controller.button.input.move_up, ev.value < 0);
+                        wlProcessKeyboardMessage(&new_controller.button.input.move_down, ev.value > 0);
+                    },
+
+                    c.ABS_X => {
+                        new_controller.left_stick_average_x = -wlProcessEvDevStickValue(ev.value, left_deadzone);
+                    },
+
+                    c.ABS_Y => {
+                        new_controller.left_stick_average_y = wlProcessEvDevStickValue(ev.value, left_deadzone);
+                    },
+
+                    c.ABS_RX => {
+                        new_controller.right_stick_average_x = wlProcessEvDevStickValue(ev.value, right_deadzone);
+                    },
+
+                    c.ABS_RY => {
+                        new_controller.right_stick_average_y = -wlProcessEvDevStickValue(ev.value, right_deadzone);
+                    },
+
+                    else => {},
+                }
+            }
+        }
+    }
+}
+
+fn wlProcessEvDevStickValue(value: i32, deadzone_threshold: i32) f32 {
+    var result: f32 = 0.0;
+
+    if (value < -deadzone_threshold) {
+        result = @as(f32, @floatFromInt(value + deadzone_threshold)) / (32768.0 - @as(f32, @floatFromInt(deadzone_threshold)));
+    } else if (value > deadzone_threshold) {
+        result = @as(f32, @floatFromInt(@as(i32, value) - @as(i32, deadzone_threshold))) / (32767.0 - @as(f32, @floatFromInt(deadzone_threshold)));
+    }
+    return result;
+}
+
+fn wlProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sym: c.xkb_keysym_t, is_down: bool, context: *WlContext) void {
     switch (key_sym) {
-        xkb.XKB_KEY_w, xkb.XKB_KEY_W => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_up, is_down),
-        xkb.XKB_KEY_a, xkb.XKB_KEY_A => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_left, is_down),
-        xkb.XKB_KEY_s, xkb.XKB_KEY_S => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_down, is_down),
-        xkb.XKB_KEY_d, xkb.XKB_KEY_D => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_right, is_down),
+        c.XKB_KEY_w, c.XKB_KEY_W => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_up, is_down),
+        c.XKB_KEY_a, c.XKB_KEY_A => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_left, is_down),
+        c.XKB_KEY_s, c.XKB_KEY_S => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_down, is_down),
+        c.XKB_KEY_d, c.XKB_KEY_D => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_right, is_down),
 
-        xkb.XKB_KEY_q, xkb.XKB_KEY_Q => wlProcessKeyboardMessage(&keyboard_controller.button.input.left_shoulder, is_down),
-        xkb.XKB_KEY_e, xkb.XKB_KEY_E => wlProcessKeyboardMessage(&keyboard_controller.button.input.right_shoulder, is_down),
+        c.XKB_KEY_q, c.XKB_KEY_Q => wlProcessKeyboardMessage(&keyboard_controller.button.input.left_shoulder, is_down),
+        c.XKB_KEY_e, c.XKB_KEY_E => wlProcessKeyboardMessage(&keyboard_controller.button.input.right_shoulder, is_down),
 
-        xkb.XKB_KEY_UP => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_up, is_down),
-        xkb.XKB_KEY_Left => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_left, is_down),
-        xkb.XKB_KEY_DOWN => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
-        xkb.XKB_KEY_Right => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_right, is_down),
+        c.XKB_KEY_UP => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_up, is_down),
+        c.XKB_KEY_Left => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_left, is_down),
+        c.XKB_KEY_DOWN => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
+        c.XKB_KEY_Right => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_right, is_down),
 
-        xkb.XKB_KEY_Escape => {
+        c.XKB_KEY_Escape => {
             wlProcessKeyboardMessage(&keyboard_controller.button.input.back, is_down);
             if (is_down) {
                 context.running = false;
@@ -283,8 +368,8 @@ fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *Wl
             const is_down = key.state == .pressed;
 
             if (kb_context.context.xkb_state) |state| {
-                const xkb_keycode: xkb.xkb_keycode_t = key.key + 8;
-                const key_sym = xkb.xkb_state_key_get_one_sym(state, xkb_keycode);
+                const xkb_keycode: c.xkb_keycode_t = key.key + 8;
+                const key_sym = c.xkb_state_key_get_one_sym(state, xkb_keycode);
 
                 if (kb_context.keyboard_controller) |controller| {
                     wlProcessKeySym(controller, key_sym, is_down, kb_context.context);
@@ -293,11 +378,11 @@ fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *Wl
         },
         .keymap => |keymap_info| {
             if (kb_context.context.xkb_state) |state| {
-                xkb.xkb_state_unref(state);
+                c.xkb_state_unref(state);
                 kb_context.context.xkb_state = null;
             }
             if (kb_context.context.xkb_keymap) |km| {
-                xkb.xkb_keymap_unref(km);
+                c.xkb_keymap_unref(km);
                 kb_context.context.xkb_keymap = null;
             }
 
@@ -309,10 +394,10 @@ fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *Wl
             defer std.posix.munmap(keymap_string);
 
             if (kb_context.context.xkb_context) |xkb_ctx| {
-                kb_context.context.xkb_keymap = xkb.xkb_keymap_new_from_string(xkb_ctx, @ptrCast(keymap_string.ptr), xkb.XKB_KEYMAP_FORMAT_TEXT_V1, xkb.XKB_KEYMAP_COMPILE_NO_FLAGS);
+                kb_context.context.xkb_keymap = c.xkb_keymap_new_from_string(xkb_ctx, @ptrCast(keymap_string.ptr), c.XKB_KEYMAP_FORMAT_TEXT_V1, c.XKB_KEYMAP_COMPILE_NO_FLAGS);
 
                 if (kb_context.context.xkb_keymap) |km| {
-                    kb_context.context.xkb_state = xkb.xkb_state_new(km);
+                    kb_context.context.xkb_state = c.xkb_state_new(km);
                     if (kb_context.context.xkb_state == null) {
                         std.debug.print("Failed to create XKB state.\n", .{});
                     }
@@ -324,7 +409,7 @@ fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *Wl
         .leave => {},
         .modifiers => |mods| {
             if (kb_context.context.xkb_state) |state| {
-                _ = xkb.xkb_state_update_mask(state, mods.mods_depressed, mods.mods_latched, mods.mods_locked, 0, 0, mods.group);
+                _ = c.xkb_state_update_mask(state, mods.mods_depressed, mods.mods_latched, mods.mods_locked, 0, 0, mods.group);
             }
         },
         .repeat_info => {},
@@ -395,17 +480,22 @@ pub fn run() !void {
         .xkb_state = null,
     };
 
-    context.xkb_context = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS);
+    context.xkb_context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
     if (context.xkb_context == null) {
         std.debug.print("Failed to create XKB context.\n", .{});
         return error.XKBContextFailed;
     }
 
     defer {
-        if (context.xkb_state) |state| xkb.xkb_state_unref(state);
-        if (context.xkb_keymap) |km| xkb.xkb_keymap_unref(km);
-        if (context.xkb_context) |ctx| xkb.xkb_context_unref(ctx);
+        if (context.xkb_state) |state| c.xkb_state_unref(state);
+        if (context.xkb_keymap) |km| c.xkb_keymap_unref(km);
+        if (context.xkb_context) |ctx| c.xkb_context_unref(ctx);
     }
+
+    const gamepad_fd = try std.posix.open("/dev/input/event4", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
+    defer std.posix.close(gamepad_fd);
+
+    var events: [NUM_EVENTS]c.struct_input_event = undefined;
 
     registry.setListener(*WlContext, wlRegistryListener, &context);
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
@@ -425,6 +515,7 @@ pub fn run() !void {
     defer xdg_toplevel.destroy();
 
     xdg_toplevel.setTitle("Handmade Hero");
+    xdg_toplevel.setAppId("Handmade Hero");
 
     wm_base.setListener(*xdg.WmBase, wlWMBaseListener, wm_base);
     xdg_surface.setListener(*WlContext, wlXDGSurfaceListener, &context);
@@ -481,7 +572,31 @@ pub fn run() !void {
 
         keyboard_context.keyboard_controller = new_keyboard_controller;
 
-        if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+        const max_controller_count: u32 = 5;
+
+        for (0..max_controller_count) |controller_index| {
+            const our_controller_index = controller_index + 1;
+            if (our_controller_index < 5) {
+                const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
+                const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
+
+                new_controller.is_connected = true;
+                new_controller.is_analog = old_controller.is_analog;
+
+                for (0..new_controller.button.buttons.len) |button_index| {
+                    new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
+                }
+
+                // Process Gamepads
+                try wlProcessGamepads(gamepad_fd, &events, new_controller);
+
+                if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
+                    new_controller.is_analog = true;
+                } else {
+                    new_controller.is_analog = false;
+                }
+            }
+        }
 
         var thread = std.mem.zeroInit(handmade.ThreadContext, .{});
 
@@ -494,7 +609,7 @@ pub fn run() !void {
         };
 
         handmade.TEMPgameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
-        // handmade.gameUpdateAndRender(&thread, &game_memory, &input[0], &buffer);
+        // handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
 
         surface.attach(global_back_buffer.buffer, 0, 0);
         surface.commit();
@@ -502,5 +617,7 @@ pub fn run() !void {
         const temp: *handmade.GameInput = new_input;
         new_input = old_input;
         old_input = temp;
+
+        if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
     }
 }

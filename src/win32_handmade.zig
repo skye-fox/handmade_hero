@@ -844,6 +844,7 @@ pub fn run() !void {
                         new_input.mouse_x = mouse_pos.x;
                         new_input.mouse_y = mouse_pos.y;
                         new_input.mouse_z = 0;
+
                         win32ProcessKeyboardMessage(&new_input.mouse_buttons[0], (@as(i32, kbam.GetKeyState(@intFromEnum(kbam.VK_LBUTTON))) & (1 << 15) != 0));
                         win32ProcessKeyboardMessage(&new_input.mouse_buttons[1], (@as(i32, kbam.GetKeyState(@intFromEnum(kbam.VK_MBUTTON))) & (1 << 15) != 0));
                         win32ProcessKeyboardMessage(&new_input.mouse_buttons[2], (@as(i32, kbam.GetKeyState(@intFromEnum(kbam.VK_RBUTTON))) & (1 << 15) != 0));

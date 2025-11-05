@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 const platform =
     // Linux
-    if (builtin.os.tag == .linux) @import("wayland_handmade.zig")
+    if (builtin.os.tag == .linux) @import("linux_handmade.zig")
     // Windows
     else if (builtin.os.tag == .windows) @import("win32_handmade.zig")
     // Unsupported

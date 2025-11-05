@@ -7,7 +7,7 @@ const platform =
     // Windows
     if (builtin.os.tag == .windows) @import("win32_handmade.zig")
     // Linux
-    else if (builtin.os.tag == .linux) @import("wayland_handmade.zig")
+    else if (builtin.os.tag == .linux) @import("linux_handmade.zig")
     // Unsupported
     else @compileError("Unsupported OS: " ++ @tagName(builtin.os.tag));
 
@@ -296,6 +296,8 @@ pub fn TEMPgameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, inpu
             // game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_x));
             // game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
             // game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
+            b_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
+            g_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
         } else {
             // NOTE: Digital
             if (controller.button.input.move_up.ended_down) {
@@ -303,7 +305,7 @@ pub fn TEMPgameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, inpu
             }
 
             if (controller.button.input.move_left.ended_down) {
-                b_offset -= 1;
+                b_offset += 1;
             }
 
             if (controller.button.input.move_down.ended_down) {
@@ -311,7 +313,23 @@ pub fn TEMPgameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, inpu
             }
 
             if (controller.button.input.move_right.ended_down) {
+                b_offset -= 1;
+            }
+
+            if (controller.button.input.action_up.ended_down) {
+                g_offset += 1;
+            }
+
+            if (controller.button.input.action_left.ended_down) {
                 b_offset += 1;
+            }
+
+            if (controller.button.input.action_down.ended_down) {
+                g_offset -= 1;
+            }
+
+            if (controller.button.input.action_right.ended_down) {
+                b_offset -= 1;
             }
         }
         // game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
