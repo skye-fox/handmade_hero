@@ -247,15 +247,20 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
             // game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
         } else {
             // NOTE: Digital
+            if (controller.button.input.move_up.ended_down) {
+                g_offset += 1;
+            }
+
             if (controller.button.input.move_left.ended_down) {
-                game_state.blue_offset -= 1;
+                game_state.blue_offset += 1;
+            }
+
+            if (controller.button.input.move_down.ended_down) {
+                game_state.green_offset -= 1;
             }
 
             if (controller.button.input.move_right.ended_down) {
-                game_state.blue_offset += 1;
-            }
-            if (controller.button.input.move_down.ended_down) {
-                game_state.green_offset -= 1;
+                game_state.blue_offset -= 1;
             }
         }
         game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));

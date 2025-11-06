@@ -18,17 +18,17 @@ pub const DEBUGReadFileResult = struct {
     content: ?*anyopaque,
 };
 
-const WlReplayBuffer = struct {
+const LinuxReplayBuffer = struct {
     file_handle: ?*anyopaque,
     memory_map: ?*anyopaque,
     file_name: [260:0]u8,
     memory_block: ?*anyopaque,
 };
 
-const WlState = struct {
+const LinuxState = struct {
     game_memory_block: ?*anyopaque,
     total_size: usize,
-    replay_buffers: [4]WlReplayBuffer,
+    replay_buffers: [4]LinuxReplayBuffer,
 
     recording_handle: ?*anyopaque,
     input_recording_index: u32,
@@ -40,12 +40,12 @@ const WlState = struct {
     one_past_last_exe_file_name_slash: ?[*:0]u8,
 };
 
-const WlRecordedInput = struct {
+const LinuxRecordedInput = struct {
     input_count: i32,
     input_stream: *handmade.GameInput,
 };
 
-const WlGameCode = struct {
+const LinuxGameCode = struct {
     game_code_dll: ?*anyopaque,
     dll_last_write_time: bool,
 
@@ -55,7 +55,7 @@ const WlGameCode = struct {
     is_valid: bool,
 };
 
-const wlDebugTimeMarker = struct {
+const LinuxDebugTimeMarker = struct {
     output_play_cursor: u32,
     output_write_cursor: u32,
     output_location: u32,
@@ -66,7 +66,7 @@ const wlDebugTimeMarker = struct {
     flip_write_cursor: u32,
 };
 
-const WlOffscreenBuffer = struct {
+const LinuxOffscreenBuffer = struct {
     buffer: ?*wl.Buffer,
     memory: []align(4096) u8,
     width: i32,
@@ -74,12 +74,12 @@ const WlOffscreenBuffer = struct {
     pitch: usize,
 };
 
-const WlWindowDimension = struct {
+const LinuxWindowDimension = struct {
     width: i32,
     height: i32,
 };
 
-const WlSoundOutput = struct {
+const LinuxSoundOutput = struct {
     samples_per_second: u32,
     bytes_per_sample: u32,
     running_sample_index: u32,
@@ -99,6 +99,8 @@ const WlContext = struct {
     seat: ?*wl.Seat,
     keyboard: ?*wl.Keyboard,
     mouse: ?*wl.Pointer,
+    frame_callback: ?*wl.Callback = null,
+    waiting_for_frame: bool,
 
     xkb_context: ?*c.struct_xkb_context,
     xkb_keymap: ?*c.struct_xkb_keymap,
@@ -112,7 +114,7 @@ const WlContext = struct {
 
 const NUM_EVENTS: u32 = 8;
 
-var global_back_buffer = std.mem.zeroInit(WlOffscreenBuffer, .{});
+var global_back_buffer = std.mem.zeroInit(LinuxOffscreenBuffer, .{});
 
 inline fn rdtsc() usize {
     var a: u32 = undefined;
@@ -122,6 +124,16 @@ inline fn rdtsc() usize {
           [b] "={eax}" (b),
     );
     return (@as(u64, a) << 32) | b;
+}
+
+inline fn linuxGetWallClock() !std.posix.timespec {
+    const result = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC_RAW);
+    return result;
+}
+
+inline fn linuxGetSecondsElapsed(start: std.posix.timespec, end: std.posix.timespec) f32 {
+    const result: f32 = @as(f32, @floatFromInt(end.sec - start.sec)) + @as(f32, @floatFromInt(end.nsec - start.nsec)) / 1_000_000_000.0;
+    return result;
 }
 
 // NOTE: (CASEY) Start-->
@@ -199,7 +211,7 @@ pub fn debugPlatformWriteEntireFile(thread: *handmade.ThreadContext, file_name: 
 // NOTE: END-->
 
 // TODO: Figure out gamepad detection.
-fn wlProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_controller: *handmade.GameControllerInput) !void {
+fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_controller: *handmade.GameControllerInput) !void {
     while (true) {
         const event_buffer = std.mem.sliceAsBytes(events);
         const num_bytes = std.posix.read(fd, event_buffer) catch |err| {
@@ -215,21 +227,21 @@ fn wlProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_con
             if (ev.type == c.EV_KEY) {
                 const is_down: bool = (ev.value == 1);
                 switch (ev.code) {
-                    c.BTN_Y => wlProcessKeyboardMessage(&new_controller.button.input.action_up, is_down),
-                    c.BTN_X => wlProcessKeyboardMessage(&new_controller.button.input.action_left, is_down),
-                    c.BTN_A => wlProcessKeyboardMessage(&new_controller.button.input.action_down, is_down),
-                    c.BTN_B => wlProcessKeyboardMessage(&new_controller.button.input.action_right, is_down),
+                    c.BTN_Y => linuxProcessKeyboardMessage(&new_controller.button.input.action_up, is_down),
+                    c.BTN_X => linuxProcessKeyboardMessage(&new_controller.button.input.action_left, is_down),
+                    c.BTN_A => linuxProcessKeyboardMessage(&new_controller.button.input.action_down, is_down),
+                    c.BTN_B => linuxProcessKeyboardMessage(&new_controller.button.input.action_right, is_down),
 
-                    c.BTN_DPAD_UP => wlProcessKeyboardMessage(&new_controller.button.input.move_up, is_down),
-                    c.BTN_DPAD_LEFT => wlProcessKeyboardMessage(&new_controller.button.input.move_left, is_down),
-                    c.BTN_DPAD_DOWN => wlProcessKeyboardMessage(&new_controller.button.input.move_down, is_down),
-                    c.BTN_DPAD_RIGHT => wlProcessKeyboardMessage(&new_controller.button.input.move_right, is_down),
+                    c.BTN_DPAD_UP => linuxProcessKeyboardMessage(&new_controller.button.input.move_up, is_down),
+                    c.BTN_DPAD_LEFT => linuxProcessKeyboardMessage(&new_controller.button.input.move_left, is_down),
+                    c.BTN_DPAD_DOWN => linuxProcessKeyboardMessage(&new_controller.button.input.move_down, is_down),
+                    c.BTN_DPAD_RIGHT => linuxProcessKeyboardMessage(&new_controller.button.input.move_right, is_down),
 
-                    c.BTN_START => wlProcessKeyboardMessage(&new_controller.button.input.start, is_down),
-                    c.BTN_SELECT => wlProcessKeyboardMessage(&new_controller.button.input.back, is_down),
+                    c.BTN_START => linuxProcessKeyboardMessage(&new_controller.button.input.start, is_down),
+                    c.BTN_SELECT => linuxProcessKeyboardMessage(&new_controller.button.input.back, is_down),
 
-                    c.BTN_TL => wlProcessKeyboardMessage(&new_controller.button.input.left_shoulder, is_down),
-                    c.BTN_TR => wlProcessKeyboardMessage(&new_controller.button.input.right_shoulder, is_down),
+                    c.BTN_TL => linuxProcessKeyboardMessage(&new_controller.button.input.left_shoulder, is_down),
+                    c.BTN_TR => linuxProcessKeyboardMessage(&new_controller.button.input.right_shoulder, is_down),
                     else => {},
                 }
             } else if (ev.type == c.EV_ABS) {
@@ -237,29 +249,29 @@ fn wlProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_con
                 const right_deadzone: i32 = 8689;
                 switch (ev.code) {
                     c.ABS_HAT0X => {
-                        wlProcessKeyboardMessage(&new_controller.button.input.move_left, ev.value < 0);
-                        wlProcessKeyboardMessage(&new_controller.button.input.move_right, ev.value > 0);
+                        linuxProcessKeyboardMessage(&new_controller.button.input.move_left, ev.value < 0);
+                        linuxProcessKeyboardMessage(&new_controller.button.input.move_right, ev.value > 0);
                     },
 
                     c.ABS_HAT0Y => {
-                        wlProcessKeyboardMessage(&new_controller.button.input.move_up, ev.value < 0);
-                        wlProcessKeyboardMessage(&new_controller.button.input.move_down, ev.value > 0);
+                        linuxProcessKeyboardMessage(&new_controller.button.input.move_up, ev.value < 0);
+                        linuxProcessKeyboardMessage(&new_controller.button.input.move_down, ev.value > 0);
                     },
 
                     c.ABS_X => {
-                        new_controller.left_stick_average_x = -wlProcessEvDevStickValue(ev.value, left_deadzone);
+                        new_controller.left_stick_average_x = -linuxProcessEvDevStickValue(ev.value, left_deadzone);
                     },
 
                     c.ABS_Y => {
-                        new_controller.left_stick_average_y = wlProcessEvDevStickValue(ev.value, left_deadzone);
+                        new_controller.left_stick_average_y = linuxProcessEvDevStickValue(ev.value, left_deadzone);
                     },
 
                     c.ABS_RX => {
-                        new_controller.right_stick_average_x = wlProcessEvDevStickValue(ev.value, right_deadzone);
+                        new_controller.right_stick_average_x = linuxProcessEvDevStickValue(ev.value, right_deadzone);
                     },
 
                     c.ABS_RY => {
-                        new_controller.right_stick_average_y = -wlProcessEvDevStickValue(ev.value, right_deadzone);
+                        new_controller.right_stick_average_y = -linuxProcessEvDevStickValue(ev.value, right_deadzone);
                     },
 
                     else => {},
@@ -269,7 +281,7 @@ fn wlProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_con
     }
 }
 
-fn wlProcessEvDevStickValue(value: i32, deadzone_threshold: i32) f32 {
+fn linuxProcessEvDevStickValue(value: i32, deadzone_threshold: i32) f32 {
     var result: f32 = 0.0;
 
     if (value < -deadzone_threshold) {
@@ -280,23 +292,23 @@ fn wlProcessEvDevStickValue(value: i32, deadzone_threshold: i32) f32 {
     return result;
 }
 
-fn wlProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sym: c.xkb_keysym_t, is_down: bool, context: *WlContext) void {
+fn linuxProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sym: c.xkb_keysym_t, is_down: bool, context: *WlContext) void {
     switch (key_sym) {
-        c.XKB_KEY_w, c.XKB_KEY_W => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_up, is_down),
-        c.XKB_KEY_a, c.XKB_KEY_A => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_left, is_down),
-        c.XKB_KEY_s, c.XKB_KEY_S => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_down, is_down),
-        c.XKB_KEY_d, c.XKB_KEY_D => wlProcessKeyboardMessage(&keyboard_controller.button.input.move_right, is_down),
+        c.XKB_KEY_w, c.XKB_KEY_W => linuxProcessKeyboardMessage(&keyboard_controller.button.input.move_up, is_down),
+        c.XKB_KEY_a, c.XKB_KEY_A => linuxProcessKeyboardMessage(&keyboard_controller.button.input.move_left, is_down),
+        c.XKB_KEY_s, c.XKB_KEY_S => linuxProcessKeyboardMessage(&keyboard_controller.button.input.move_down, is_down),
+        c.XKB_KEY_d, c.XKB_KEY_D => linuxProcessKeyboardMessage(&keyboard_controller.button.input.move_right, is_down),
 
-        c.XKB_KEY_q, c.XKB_KEY_Q => wlProcessKeyboardMessage(&keyboard_controller.button.input.left_shoulder, is_down),
-        c.XKB_KEY_e, c.XKB_KEY_E => wlProcessKeyboardMessage(&keyboard_controller.button.input.right_shoulder, is_down),
+        c.XKB_KEY_q, c.XKB_KEY_Q => linuxProcessKeyboardMessage(&keyboard_controller.button.input.left_shoulder, is_down),
+        c.XKB_KEY_e, c.XKB_KEY_E => linuxProcessKeyboardMessage(&keyboard_controller.button.input.right_shoulder, is_down),
 
-        c.XKB_KEY_UP => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_up, is_down),
-        c.XKB_KEY_Left => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_left, is_down),
-        c.XKB_KEY_DOWN => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
-        c.XKB_KEY_Right => wlProcessKeyboardMessage(&keyboard_controller.button.input.action_right, is_down),
+        c.XKB_KEY_UP => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_up, is_down),
+        c.XKB_KEY_Left => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_left, is_down),
+        c.XKB_KEY_DOWN => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
+        c.XKB_KEY_Right => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_right, is_down),
 
         c.XKB_KEY_Escape => {
-            wlProcessKeyboardMessage(&keyboard_controller.button.input.back, is_down);
+            linuxProcessKeyboardMessage(&keyboard_controller.button.input.back, is_down);
             if (is_down) {
                 context.running = false;
             }
@@ -306,14 +318,14 @@ fn wlProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sym: 
     }
 }
 
-fn wlProcessKeyboardMessage(new_state: *handmade.GameButtonState, is_down: bool) void {
+fn linuxProcessKeyboardMessage(new_state: *handmade.GameButtonState, is_down: bool) void {
     if (new_state.ended_down != is_down) {
         new_state.ended_down = is_down;
         new_state.half_transition_count += 1;
     }
 }
 
-fn WlCreateBuffer(buffer: *WlOffscreenBuffer, shm: *wl.Shm, width: i32, height: i32) !void {
+fn wlCreateBuffer(buffer: *LinuxOffscreenBuffer, shm: *wl.Shm, width: i32, height: i32) !void {
     buffer.width = width;
     buffer.height = height;
     buffer.pitch = @intCast(width * 4);
@@ -372,7 +384,7 @@ fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *Wl
                 const key_sym = c.xkb_state_key_get_one_sym(state, xkb_keycode);
 
                 if (kb_context.keyboard_controller) |controller| {
-                    wlProcessKeySym(controller, key_sym, is_down, kb_context.context);
+                    linuxProcessKeySym(controller, key_sym, is_down, kb_context.context);
                 }
             }
         },
@@ -413,6 +425,14 @@ fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *Wl
             }
         },
         .repeat_info => {},
+    }
+}
+
+fn wlFrameListener(_: *wl.Callback, event: wl.Callback.Event, context: *WlContext) void {
+    switch (event) {
+        .done => {
+            context.waiting_for_frame = false;
+        },
     }
 }
 
@@ -468,17 +488,7 @@ pub fn run() !void {
     const registry = try wl.Display.getRegistry(display);
     defer registry.destroy();
 
-    var context = WlContext{
-        .shm = null,
-        .compositor = null,
-        .wm_base = null,
-        .seat = null,
-        .keyboard = null,
-        .mouse = null,
-        .xkb_context = null,
-        .xkb_keymap = null,
-        .xkb_state = null,
-    };
+    var context = std.mem.zeroInit(WlContext, .{});
 
     context.xkb_context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
     if (context.xkb_context == null) {
@@ -543,7 +553,9 @@ pub fn run() !void {
     var new_input: *handmade.GameInput = &input[0];
     var old_input: *handmade.GameInput = &input[1];
 
-    try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
+    var flip_wall_clock = try linuxGetWallClock();
+
+    try wlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
     defer if (global_back_buffer.buffer) |buf| buf.destroy();
 
     var keyboard_context = WlKeyboardContext{
@@ -556,68 +568,106 @@ pub fn run() !void {
     }
 
     while (context.running) {
+        const frame_start = try linuxGetWallClock();
+        const frame_start_cycles: i64 = @intCast(rdtsc());
+
         if (global_back_buffer.width != context.width or global_back_buffer.height != context.height) {
             global_back_buffer.buffer.?.destroy();
             std.posix.munmap(global_back_buffer.memory);
-            try WlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
+            try wlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
         }
 
-        const old_keyboard_controller: *handmade.GameControllerInput = handmade.getController(old_input, 0);
-        const new_keyboard_controller: *handmade.GameControllerInput = handmade.getController(new_input, 0);
-        new_keyboard_controller.is_connected = true;
+        if (!context.waiting_for_frame) {
+            const old_keyboard_controller: *handmade.GameControllerInput = handmade.getController(old_input, 0);
+            const new_keyboard_controller: *handmade.GameControllerInput = handmade.getController(new_input, 0);
+            new_keyboard_controller.is_connected = true;
 
-        for (0..new_keyboard_controller.button.buttons.len) |button_index| {
-            new_keyboard_controller.button.buttons[button_index].ended_down = old_keyboard_controller.button.buttons[button_index].ended_down;
-        }
+            for (0..new_keyboard_controller.button.buttons.len) |button_index| {
+                new_keyboard_controller.button.buttons[button_index].ended_down = old_keyboard_controller.button.buttons[button_index].ended_down;
+            }
 
-        keyboard_context.keyboard_controller = new_keyboard_controller;
+            keyboard_context.keyboard_controller = new_keyboard_controller;
 
-        const max_controller_count: u32 = 5;
+            const max_controller_count: u32 = 5;
 
-        for (0..max_controller_count) |controller_index| {
-            const our_controller_index = controller_index + 1;
-            if (our_controller_index < 5) {
-                const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
-                const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
+            for (0..max_controller_count) |controller_index| {
+                const our_controller_index = controller_index + 1;
+                if (our_controller_index < 5) {
+                    const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
+                    const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
 
-                new_controller.is_connected = true;
-                new_controller.is_analog = old_controller.is_analog;
+                    new_controller.is_connected = true;
+                    new_controller.is_analog = old_controller.is_analog;
 
-                for (0..new_controller.button.buttons.len) |button_index| {
-                    new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
-                }
+                    for (0..new_controller.button.buttons.len) |button_index| {
+                        new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
+                    }
 
-                // Process Gamepads
-                try wlProcessGamepads(gamepad_fd, &events, new_controller);
+                    // Process Gamepads
+                    try linuxProcessGamepads(gamepad_fd, &events, new_controller);
 
-                if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
-                    new_controller.is_analog = true;
-                } else {
-                    new_controller.is_analog = false;
+                    if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
+                        new_controller.is_analog = true;
+                    } else {
+                        new_controller.is_analog = false;
+                    }
                 }
             }
+
+            var thread = std.mem.zeroInit(handmade.ThreadContext, .{});
+
+            var buffer = handmade.GameOffScreenBuffer{
+                .memory = global_back_buffer.memory,
+                .width = global_back_buffer.width,
+                .height = global_back_buffer.height,
+                .pitch = global_back_buffer.pitch,
+                .bytes_per_pixel = 4,
+            };
+
+            handmade.TEMPgameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+            // handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+
+            if (context.frame_callback) |cb| {
+                cb.destroy();
+            }
+
+            context.frame_callback = try surface.frame();
+            context.frame_callback.?.setListener(*WlContext, wlFrameListener, &context);
+            context.waiting_for_frame = true;
+
+            const audio_wall_clock = try linuxGetWallClock();
+            const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
+            _ = from_begin_to_audio_seconds;
+
+            // TODO: sound code
+
+            flip_wall_clock = try linuxGetWallClock();
+
+            surface.attach(global_back_buffer.buffer, 0, 0);
+            surface.damage(0, 0, context.width, context.height);
+            surface.commit();
+
+            const temp: *handmade.GameInput = new_input;
+            new_input = old_input;
+            old_input = temp;
         }
 
-        var thread = std.mem.zeroInit(handmade.ThreadContext, .{});
+        while (context.waiting_for_frame and context.running) {
+            if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+        }
 
-        var buffer = handmade.GameOffScreenBuffer{
-            .memory = global_back_buffer.memory,
-            .width = global_back_buffer.width,
-            .height = global_back_buffer.height,
-            .pitch = global_back_buffer.pitch,
-            .bytes_per_pixel = 4,
-        };
+        const frame_end = try linuxGetWallClock();
+        const frame_end_cycles: i64 = @intCast(rdtsc());
 
-        handmade.TEMPgameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
-        // handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+        const ms_per_frame: f32 = 1000.0 * linuxGetSecondsElapsed(frame_start, frame_end);
+        const cycles_elapsed: i64 = frame_end_cycles - frame_start_cycles;
 
-        surface.attach(global_back_buffer.buffer, 0, 0);
-        surface.commit();
+        const frames_per_second: f32 = 1000.0 / ms_per_frame;
+        const mega_cycles_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
 
-        const temp: *handmade.GameInput = new_input;
-        new_input = old_input;
-        old_input = temp;
-
-        if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+        std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_second, mega_cycles_per_frame });
+    }
+    if (context.frame_callback) |cb| {
+        cb.destroy();
     }
 }
