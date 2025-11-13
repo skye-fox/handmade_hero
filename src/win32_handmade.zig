@@ -459,7 +459,12 @@ fn win32ProcessPendingMessages(state: *Win32State, keyboard_controller: *handmad
                                 global_running = false;
                             }
                         },
-                        .ESCAPE => win32ProcessKeyboardMessage(&keyboard_controller.button.input.start, is_down),
+                        .ESCAPE => {
+                            win32ProcessKeyboardMessage(&keyboard_controller.button.input.back, is_down);
+                            if (debug_mode and is_down) {
+                                global_running = false;
+                            }
+                        },
                         .L => {
                             if (is_down) {
                                 if (state.input_playing_index == 0) {
