@@ -925,6 +925,11 @@ pub fn run() !void {
                             new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
                         }
 
+                        new_controller.left_stick_average_x = old_controller.left_stick_average_x;
+                        new_controller.left_stick_average_y = old_controller.left_stick_average_y;
+                        new_controller.right_stick_average_x = old_controller.right_stick_average_x;
+                        new_controller.right_stick_average_y = old_controller.right_stick_average_y;
+
                         // Process Gamepads
                         const success = linuxProcessGamepads(fd, &events, new_controller);
                         if (!success) {
