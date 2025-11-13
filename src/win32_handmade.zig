@@ -770,7 +770,7 @@ pub fn run() !void {
                 .transient_storage = null,
 
                 .debugPlatformReadEntireFile = debugPlatformReadEntireFile,
-                .debugPlatformFreeFilMemory = debugPlatformFreeFileMemory,
+                .debugPlatformFreeFileMemory = debugPlatformFreeFileMemory,
                 .debugPlatformWriteEntireFile = debugPlatformWriteEntireFile,
             };
             game_memory.permanent_storage_size = handmade.megaBytes(64);
