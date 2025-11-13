@@ -286,7 +286,7 @@ fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_
                     else => {},
                 }
             } else if (ev.type == c.EV_ABS) {
-                const left_deadzone: i32 = 9849;
+                const left_deadzone: i32 = 7849;
                 const right_deadzone: i32 = 8689;
                 switch (ev.code) {
                     c.ABS_HAT0X => {
