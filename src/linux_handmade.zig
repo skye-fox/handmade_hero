@@ -6,6 +6,8 @@ const wayland = @import("wayland");
 const wl = wayland.client.wl;
 const xdg = wayland.client.xdg;
 
+const mini = @import("miniaudio");
+
 const c = @cImport({
     @cInclude("xkbcommon/xkbcommon.h");
     @cInclude("linux/input.h");
@@ -16,6 +18,20 @@ const handmade = @import("handmade.zig");
 pub const DEBUGReadFileResult = struct {
     content_size: u32,
     content: ?*anyopaque,
+};
+
+const LinuxAudioState = struct {
+    ring_buffer: []i16,
+    ring_buffer_size: u32,
+
+    write_cursor: std.atomic.Value(u32),
+    read_cursor: std.atomic.Value(u32),
+
+    sound_is_valid: std.atomic.Value(bool),
+
+    samples_per_second: u32,
+    bytes_per_sample: u32,
+    underrun_count: std.atomic.Value(u32),
 };
 
 const LinuxReplayBuffer = struct {
@@ -72,19 +88,6 @@ const LinuxOffscreenBuffer = struct {
     width: i32,
     height: i32,
     pitch: usize,
-};
-
-const LinuxWindowDimension = struct {
-    width: i32,
-    height: i32,
-};
-
-const LinuxSoundOutput = struct {
-    samples_per_second: u32,
-    bytes_per_sample: u32,
-    running_sample_index: u32,
-    secondary_buffer_size: u32,
-    safety_bytes: u32,
 };
 
 const WlKeyboardContext = struct {
@@ -210,6 +213,44 @@ pub fn debugPlatformWriteEntireFile(thread: *handmade.ThreadContext, file_name: 
 
 // NOTE: END-->
 
+fn miniCallback(pDevice: ?*anyopaque, pOutput: ?*anyopaque, pInput: ?*const anyopaque, frame_count: u32) callconv(.c) void {
+    _ = pInput;
+
+    const device: *mini.ma_device = @ptrCast(@alignCast(pDevice));
+    const audio_state: *LinuxAudioState = @ptrCast(@alignCast(device.pUserData));
+
+    const channels: u32 = device.playback.channels;
+    const samples_to_read = frame_count * channels;
+    const output: [*]f32 = @ptrCast(@alignCast(pOutput));
+
+    if (!audio_state.sound_is_valid.load(.acquire)) {
+        @memset(output[0..samples_to_read], 0.0);
+        return;
+    }
+
+    const write_cursor = audio_state.write_cursor.load(.acquire);
+    const read_cursor = audio_state.read_cursor.load(.acquire);
+
+    const available_samples = if (write_cursor >= read_cursor)
+        write_cursor - read_cursor
+    else
+        (audio_state.ring_buffer_size - read_cursor) + write_cursor;
+
+    if (available_samples >= samples_to_read) {
+        for (0..samples_to_read) |i| {
+            const buffer_index = (read_cursor + @as(u32, @intCast(i))) % audio_state.ring_buffer_size;
+            output[i] = @as(f32, @floatFromInt(audio_state.ring_buffer[buffer_index])) / 32768.0;
+        }
+
+        const new_read_cursor = (read_cursor + samples_to_read) % audio_state.ring_buffer_size;
+        audio_state.read_cursor.store(new_read_cursor, .release);
+    } else {
+        @memset(output[0..samples_to_read], 0.0);
+        _ = audio_state.underrun_count.fetchAdd(1, .monotonic);
+        std.debug.print("Audio underrun! Available: {}, Needed {}\n", .{ available_samples, samples_to_read });
+    }
+}
+
 // TODO: Figure out gamepad detection.
 fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_controller: *handmade.GameControllerInput) !void {
     while (true) {
@@ -245,7 +286,7 @@ fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_
                     else => {},
                 }
             } else if (ev.type == c.EV_ABS) {
-                const left_deadzone: i32 = 7849;
+                const left_deadzone: i32 = 9849;
                 const right_deadzone: i32 = 8689;
                 switch (ev.code) {
                     c.ABS_HAT0X => {
@@ -482,6 +523,8 @@ fn wlWMBaseListener(_: *xdg.WmBase, event: xdg.WmBase.Event, wm_base: *xdg.WmBas
 }
 
 pub fn run() !void {
+    var state = std.mem.zeroes(LinuxState);
+
     const display = try wl.Display.connect(null);
     defer display.disconnect();
 
@@ -489,23 +532,6 @@ pub fn run() !void {
     defer registry.destroy();
 
     var context = std.mem.zeroInit(WlContext, .{});
-
-    context.xkb_context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
-    if (context.xkb_context == null) {
-        std.debug.print("Failed to create XKB context.\n", .{});
-        return error.XKBContextFailed;
-    }
-
-    defer {
-        if (context.xkb_state) |state| c.xkb_state_unref(state);
-        if (context.xkb_keymap) |km| c.xkb_keymap_unref(km);
-        if (context.xkb_context) |ctx| c.xkb_context_unref(ctx);
-    }
-
-    const gamepad_fd = try std.posix.open("/dev/input/event4", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
-    defer std.posix.close(gamepad_fd);
-
-    var events: [NUM_EVENTS]c.struct_input_event = undefined;
 
     registry.setListener(*WlContext, wlRegistryListener, &context);
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
@@ -540,6 +566,86 @@ pub fn run() !void {
 
     if (!context.running) return;
 
+    const monitor_refresh_hz: f32 = 144.0;
+    const game_update_hz: f32 = monitor_refresh_hz / 2.0;
+    const target_seconds_per_frame: f32 = 1.0 / game_update_hz;
+    _ = target_seconds_per_frame;
+
+    const samples_per_second: u32 = 48000;
+    const channels: u32 = 2;
+
+    const samples_per_second_float: f32 = @floatFromInt(samples_per_second);
+    const channels_float: f32 = @floatFromInt(channels);
+
+    const ring_buffer_seconds: f32 = 1.0;
+    const ring_buffer_size: u32 = @intFromFloat(samples_per_second_float * ring_buffer_seconds * channels_float);
+    const ring_buffer_size_in_bytes: usize = ring_buffer_size * @sizeOf(i16);
+
+    const ring_buffer_memory = try std.posix.mmap(
+        null,
+        ring_buffer_size_in_bytes,
+        std.posix.PROT.READ | std.posix.PROT.WRITE,
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1,
+        0,
+    );
+    defer std.posix.munmap(ring_buffer_memory);
+    @memset(ring_buffer_memory, 0);
+
+    const ring_buffer: []align(4096) i16 = @alignCast(std.mem.bytesAsSlice(i16, ring_buffer_memory));
+
+    const expected_frames_per_update: u32 = @intFromFloat(samples_per_second_float / game_update_hz);
+    const total_samples = expected_frames_per_update * channels;
+    const temp_buffer_size_in_bytes: usize = total_samples * @sizeOf(i16);
+
+    const temp_buffer_memory = try std.posix.mmap(
+        null,
+        temp_buffer_size_in_bytes,
+        std.posix.PROT.READ | std.posix.PROT.WRITE,
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1,
+        0,
+    );
+    defer std.posix.munmap(temp_buffer_memory);
+    @memset(temp_buffer_memory, 0);
+
+    const temp_buffer: []align(4096) i16 = @alignCast(std.mem.bytesAsSlice(i16, temp_buffer_memory));
+    defer std.heap.page_allocator.free(temp_buffer);
+
+    var audio_state = LinuxAudioState{
+        .ring_buffer = ring_buffer,
+        .ring_buffer_size = ring_buffer_size,
+        .write_cursor = std.atomic.Value(u32).init(0),
+        .read_cursor = std.atomic.Value(u32).init(0),
+        .sound_is_valid = std.atomic.Value(bool).init(false),
+        .samples_per_second = samples_per_second,
+        .bytes_per_sample = @sizeOf(i16) * channels,
+        .underrun_count = std.atomic.Value(u32).init(0),
+    };
+
+    var mini_device_config = mini.ma_device_config_init(mini.ma_device_type_playback);
+    mini_device_config.playback.format = mini.ma_format_f32;
+    mini_device_config.playback.channels = channels;
+    mini_device_config.sampleRate = samples_per_second;
+    mini_device_config.dataCallback = miniCallback;
+    mini_device_config.pUserData = &audio_state;
+
+    var device: mini.ma_device = undefined;
+    var mini_result = mini.ma_device_init(null, &mini_device_config, &device);
+    if (mini_result != mini.MA_SUCCESS) {
+        std.debug.print("Failed to initialize device {}\n", .{mini_result});
+        return error.MiniDeviceInitFailed;
+    }
+    defer mini.ma_device_uninit(&device);
+
+    mini_result = mini.ma_device_start(&device);
+    if (mini_result != mini.MA_SUCCESS) {
+        std.debug.print("Failed to start device: {}\n", .{mini_result});
+        return error.MiniDeviceStartFailed;
+    }
+
+    const base_address: ?[*]align(4096) u8 = if (debug_mode) @ptrFromInt(handmade.teraBytes(2)) else null;
+
     var game_memory = std.mem.zeroInit(handmade.GameMemory, .{
         .permanent_storage_size = handmade.megaBytes(64),
         .transient_storage_size = handmade.gigaBytes(1),
@@ -548,6 +654,38 @@ pub fn run() !void {
         .debugPlatformFreeFilMemory = debugPlatformFreeFileMemory,
         .debugPlatformWriteEntireFile = debugPlatformWriteEntireFile,
     });
+
+    state.total_size = game_memory.permanent_storage_size + game_memory.transient_storage_size;
+    state.game_memory_block = @ptrCast(@alignCast(std.posix.mmap(
+        base_address,
+        state.total_size,
+        std.posix.PROT.READ | std.posix.PROT.WRITE,
+        .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+        -1,
+        0,
+    ) catch |err| {
+        std.debug.print("mmap failed: {}\n", .{err});
+        return err;
+    }));
+    game_memory.permanent_storage = state.game_memory_block;
+    game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.transient_storage_size;
+
+    context.xkb_context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
+    if (context.xkb_context == null) {
+        std.debug.print("Failed to create XKB context.\n", .{});
+        return error.XKBContextFailed;
+    }
+
+    defer {
+        if (context.xkb_state) |kb_state| c.xkb_state_unref(kb_state);
+        if (context.xkb_keymap) |km| c.xkb_keymap_unref(km);
+        if (context.xkb_context) |ctx| c.xkb_context_unref(ctx);
+    }
+
+    const gamepad_fd = try std.posix.open("/dev/input/event4", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
+    defer std.posix.close(gamepad_fd);
+
+    var events: [NUM_EVENTS]c.struct_input_event = undefined;
 
     var input = [_]handmade.GameInput{std.mem.zeroInit(handmade.GameInput, .{})} ** 2;
     var new_input: *handmade.GameInput = &input[0];
@@ -624,8 +762,54 @@ pub fn run() !void {
                 .bytes_per_pixel = 4,
             };
 
-            handmade.TEMPgameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
-            // handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+            handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+
+            if (!audio_state.sound_is_valid.load(.acquire)) {
+                audio_state.sound_is_valid.store(true, .release);
+            }
+
+            const audio_wall_clock = try linuxGetWallClock();
+            const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
+            _ = from_begin_to_audio_seconds;
+
+            const write_cursor = audio_state.write_cursor.load(.acquire);
+            const read_cursor = audio_state.read_cursor.load(.acquire);
+
+            const buffered_samples = if (write_cursor >= read_cursor)
+                write_cursor - read_cursor
+            else
+                (audio_state.ring_buffer_size - read_cursor) + write_cursor;
+
+            const target_frames_ahead: u32 = 4;
+            const samples_per_frame: u32 = @intFromFloat((samples_per_second_float / game_update_hz) * channels_float);
+            const target_buffered_samples = samples_per_frame * target_frames_ahead;
+
+            if (buffered_samples < target_buffered_samples) {
+                const free_samples = if (read_cursor > write_cursor)
+                    read_cursor - write_cursor - 1
+                else
+                    (audio_state.ring_buffer_size - write_cursor) + read_cursor - 1;
+
+                if (free_samples >= total_samples) {
+                    var sound_buffer = handmade.GameSoundOutputBuffer{
+                        .samples_per_second = @intCast(audio_state.samples_per_second),
+                        .sample_count = @intCast(expected_frames_per_update),
+                        .samples = temp_buffer.ptr,
+                    };
+
+                    handmade.getSoundSamples(&thread, &game_memory, &sound_buffer);
+
+                    for (0..total_samples) |i| {
+                        const buffer_index = (write_cursor + @as(u32, @intCast(i))) % audio_state.ring_buffer_size;
+                        audio_state.ring_buffer[buffer_index] = temp_buffer[i];
+                    }
+
+                    const new_write_cursor = (write_cursor + total_samples) % audio_state.ring_buffer_size;
+                    audio_state.write_cursor.store(new_write_cursor, .release);
+                } else {
+                    std.debug.print("Ring buffer full! Skipping audio frame.\n", .{});
+                }
+            }
 
             if (context.frame_callback) |cb| {
                 cb.destroy();
@@ -634,12 +818,6 @@ pub fn run() !void {
             context.frame_callback = try surface.frame();
             context.frame_callback.?.setListener(*WlContext, wlFrameListener, &context);
             context.waiting_for_frame = true;
-
-            const audio_wall_clock = try linuxGetWallClock();
-            const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
-            _ = from_begin_to_audio_seconds;
-
-            // TODO: sound code
 
             flip_wall_clock = try linuxGetWallClock();
 
@@ -664,8 +842,10 @@ pub fn run() !void {
 
         const frames_per_second: f32 = 1000.0 / ms_per_frame;
         const mega_cycles_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
+        _ = frames_per_second;
+        _ = mega_cycles_per_frame;
 
-        std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_second, mega_cycles_per_frame });
+        // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_second, mega_cycles_per_frame });
     }
     if (context.frame_callback) |cb| {
         cb.destroy();

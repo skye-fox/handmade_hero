@@ -58,6 +58,20 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("wayland-client", .{});
 
         exe.linkSystemLibrary("xkbcommon");
+
+        const miniaudio = b.addTranslateC(.{
+            .root_source_file = b.path("libs/miniaudio/miniaudio.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.addImport("miniaudio", miniaudio.createModule());
+
+        exe.addIncludePath(b.path("libs/miniaudio/"));
+
+        exe.addCSourceFile(.{
+            .file = b.path("libs/miniaudio/miniaudio.c"),
+            .flags = &.{},
+        });
     }
 
     b.installArtifact(exe);
