@@ -19,7 +19,7 @@ pub const GameMemory = struct {
     transient_storage: ?*anyopaque,
 
     debugPlatformReadEntireFile: *const fn (*ThreadContext, [*:0]const u8) platform.DEBUGReadFileResult,
-    debugPlatformFreeFilMemory: *const fn (*ThreadContext, ?*anyopaque) void,
+    debugPlatformFreeFileMemory: *const fn (*ThreadContext, ?*anyopaque) void,
     debugPlatformWriteEntireFile: *const fn (*ThreadContext, [*:0]const u8, u32, ?*anyopaque) bool,
 };
 
@@ -232,7 +232,7 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
             const file: platform.DEBUGReadFileResult = memory.debugPlatformReadEntireFile(thread, file_path);
             if (file.content) |content| {
                 _ = memory.debugPlatformWriteEntireFile(thread, "test.txt", file.content_size, content);
-                memory.debugPlatformFreeFilMemory(thread, content);
+                memory.debugPlatformFreeFileMemory(thread, content);
             }
         }
         memory.is_initialized = true;

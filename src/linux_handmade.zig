@@ -20,6 +20,190 @@ pub const DEBUGReadFileResult = struct {
     content: ?*anyopaque,
 };
 
+const LinuxGamepadManager = struct {
+    inotify_fd: std.posix.fd_t,
+    watch_fd: i32,
+    slots: [4]LinuxGamepadSlot,
+
+    fn init() !LinuxGamepadManager {
+        const inotify_fd = try std.posix.inotify_init1(std.os.linux.IN.CLOEXEC | std.os.linux.IN.NONBLOCK);
+        errdefer std.posix.close(inotify_fd);
+
+        const watch_fd = try std.posix.inotify_add_watch(inotify_fd, "/dev/input/", std.os.linux.IN.CREATE | std.os.linux.IN.DELETE);
+
+        var manager = LinuxGamepadManager{
+            .inotify_fd = inotify_fd,
+            .watch_fd = watch_fd,
+            .slots = .{LinuxGamepadSlot{
+                .fd = null,
+                .device_path = undefined,
+                .device_path_len = 0,
+                .is_valid = false,
+            }} ** 4,
+        };
+
+        try manager.enumerateDevices();
+
+        return manager;
+    }
+
+    fn deinit(self: *LinuxGamepadManager) void {
+        for (&self.slots) |*slot| {
+            if (slot.fd) |fd| {
+                std.posix.close(fd);
+                slot.fd = null;
+            }
+            slot.is_valid = false;
+        }
+
+        std.posix.inotify_rm_watch(self.inotify_fd, self.watch_fd);
+        std.posix.close(self.inotify_fd);
+    }
+
+    fn is_gamepad(fd: std.posix.fd_t) bool {
+        var key_bits: [(c.KEY_MAX + 7) / 8]u8 = undefined;
+
+        const IOC_READ: u32 = 2;
+        const IOC_NRBITS: u32 = 8;
+        const IOC_TYPEBITS: u32 = 8;
+        const IOC_SIZEBITS: u32 = 14;
+
+        const ioc_nrshift: u32 = 0;
+        const ioc_typeshift: u32 = ioc_nrshift + IOC_NRBITS;
+        const ioc_sizeshift: u32 = ioc_typeshift + IOC_TYPEBITS;
+        const ioc_dirshift: u32 = ioc_sizeshift + IOC_SIZEBITS;
+
+        const EVIOCGBIT_KEY = (IOC_READ << ioc_dirshift) |
+            (@as(u32, 'E') << ioc_typeshift) |
+            ((0x20 + c.EV_KEY) << ioc_nrshift) |
+            (@as(u32, @sizeOf(@TypeOf(key_bits))) << ioc_sizeshift);
+
+        const rc = std.os.linux.ioctl(fd, EVIOCGBIT_KEY, @intFromPtr(&key_bits));
+
+        if (std.posix.errno(rc) != .SUCCESS) return false;
+
+        const btn_south: usize = 0x130;
+        const byte_index = btn_south / 8;
+        const bit_index: u3 = @intCast(btn_south % 8);
+        return (key_bits[byte_index] & (@as(u8, 1) << bit_index)) != 0;
+    }
+
+    fn enumerateDevices(self: *LinuxGamepadManager) !void {
+        var slot_index: usize = 0;
+
+        var event_num: u32 = 0;
+        while (event_num < 32 and slot_index < 4) : (event_num += 1) {
+            var path_buf: [64]u8 = undefined;
+            const path = std.fmt.bufPrintZ(&path_buf, "/dev/input/event{d}", .{event_num}) catch continue;
+
+            const fd = std.posix.openZ(path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
+
+            if (is_gamepad(fd)) {
+                var slot = &self.slots[slot_index];
+                slot.fd = fd;
+
+                @memcpy(slot.device_path[0..path.len], path);
+                slot.device_path_len = path.len;
+                slot.is_valid = true;
+
+                slot_index += 1;
+            } else {
+                std.posix.close(fd);
+            }
+        }
+    }
+
+    fn checkHotplug(self: *LinuxGamepadManager) !void {
+        var event_buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
+
+        const bytes_read = std.posix.read(self.inotify_fd, &event_buf) catch |err| {
+            if (err == error.WouldBlock) return;
+            return err;
+        };
+
+        if (bytes_read == 0) {
+            return;
+        }
+
+        var offset: usize = 0;
+        while (offset < bytes_read) {
+            const event_ptr: *const linux.inotify_event = @ptrCast(@alignCast(&event_buf[offset]));
+            const event = event_ptr.*;
+
+            if (event_ptr.getName()) |name| {
+                if (std.mem.startsWith(u8, name, "event")) {
+                    if (event.mask & linux.IN.CREATE != 0) {
+                        try self.handleDeviceAdded(name);
+                    } else if (event.mask & linux.IN.DELETE != 0) {
+                        try self.handleDeviceRemoved(name);
+                    }
+                }
+            }
+
+            offset += @sizeOf(linux.inotify_event) + event.len;
+        }
+    }
+
+    fn handleDeviceAdded(self: *LinuxGamepadManager, file_name: [:0]const u8) !void {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrintZ(&path_buf, "/dev/input/{s}", .{file_name});
+
+        var retries: u32 = 0;
+        const max_retries: u32 = 10;
+        const retry_delay_ms: u32 = 10;
+
+        while (retries < max_retries) : (retries += 1) {
+            std.Thread.sleep(retry_delay_ms * std.time.ns_per_ms);
+
+            const fd = std.posix.openZ(path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| {
+                if (err == error.AccessDenied and retries < max_retries - 1) continue;
+                return;
+            };
+
+            if (!is_gamepad(fd)) {
+                std.posix.close(fd);
+                return;
+            }
+
+            for (&self.slots) |*slot| {
+                if (!slot.is_valid) {
+                    slot.fd = fd;
+                    @memcpy(slot.device_path[0..path.len], path);
+                    slot.device_path_len = path.len;
+                    slot.is_valid = true;
+                    return;
+                }
+            }
+            std.posix.close(fd);
+            return;
+        }
+    }
+
+    fn handleDeviceRemoved(self: *LinuxGamepadManager, file_name: [:0]const u8) !void {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrintZ(&path_buf, "/dev/input/{s}", .{file_name});
+
+        for (&self.slots) |*slot| {
+            if (slot.is_valid and std.mem.eql(u8, slot.device_path[0..slot.device_path_len], path)) {
+                if (slot.fd) |fd| {
+                    std.posix.close(fd);
+                }
+
+                slot.fd = null;
+                slot.is_valid = false;
+                return;
+            }
+        }
+    }
+};
+
+const LinuxGamepadSlot = struct {
+    fd: ?std.posix.fd_t,
+    device_path: [64]u8,
+    device_path_len: usize,
+    is_valid: bool,
+};
+
 const LinuxAudioState = struct {
     ring_buffer: []i16,
     ring_buffer_size: u32,
@@ -251,15 +435,14 @@ fn miniCallback(pDevice: ?*anyopaque, pOutput: ?*anyopaque, pInput: ?*const anyo
     }
 }
 
-// TODO: Figure out gamepad detection.
-fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_controller: *handmade.GameControllerInput) !void {
+fn linuxProcessGamepads(fd: std.posix.fd_t, events: *[NUM_EVENTS]c.struct_input_event, new_controller: *handmade.GameControllerInput) bool {
     while (true) {
         const event_buffer = std.mem.sliceAsBytes(events);
         const num_bytes = std.posix.read(fd, event_buffer) catch |err| {
             if (err == error.WouldBlock) {
-                break;
+                return true;
             }
-            return err;
+            return false;
         };
 
         const num_events = num_bytes / @sizeOf(c.struct_input_event);
@@ -320,6 +503,7 @@ fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_
             }
         }
     }
+    return true;
 }
 
 fn linuxProcessEvDevStickValue(value: i32, deadzone_threshold: i32) f32 {
@@ -610,7 +794,6 @@ pub fn run() !void {
     @memset(temp_buffer_memory, 0);
 
     const temp_buffer: []align(4096) i16 = @alignCast(std.mem.bytesAsSlice(i16, temp_buffer_memory));
-    defer std.heap.page_allocator.free(temp_buffer);
 
     var audio_state = LinuxAudioState{
         .ring_buffer = ring_buffer,
@@ -638,12 +821,6 @@ pub fn run() !void {
     }
     defer mini.ma_device_uninit(&device);
 
-    mini_result = mini.ma_device_start(&device);
-    if (mini_result != mini.MA_SUCCESS) {
-        std.debug.print("Failed to start device: {}\n", .{mini_result});
-        return error.MiniDeviceStartFailed;
-    }
-
     const base_address: ?[*]align(4096) u8 = if (debug_mode) @ptrFromInt(handmade.teraBytes(2)) else null;
 
     var game_memory = std.mem.zeroInit(handmade.GameMemory, .{
@@ -651,7 +828,7 @@ pub fn run() !void {
         .transient_storage_size = handmade.gigaBytes(1),
 
         .debugPlatformReadEntireFile = debugPlatformReadEntireFile,
-        .debugPlatformFreeFilMemory = debugPlatformFreeFileMemory,
+        .debugPlatformFreeFileMemory = debugPlatformFreeFileMemory,
         .debugPlatformWriteEntireFile = debugPlatformWriteEntireFile,
     });
 
@@ -668,7 +845,7 @@ pub fn run() !void {
         return err;
     }));
     game_memory.permanent_storage = state.game_memory_block;
-    game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.transient_storage_size;
+    game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.permanent_storage_size;
 
     context.xkb_context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
     if (context.xkb_context == null) {
@@ -682,8 +859,8 @@ pub fn run() !void {
         if (context.xkb_context) |ctx| c.xkb_context_unref(ctx);
     }
 
-    const gamepad_fd = try std.posix.open("/dev/input/event14", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
-    defer std.posix.close(gamepad_fd);
+    var gamepad_manager = try LinuxGamepadManager.init();
+    defer gamepad_manager.deinit();
 
     var events: [NUM_EVENTS]c.struct_input_event = undefined;
 
@@ -726,29 +903,44 @@ pub fn run() !void {
 
             keyboard_context.keyboard_controller = new_keyboard_controller;
 
-            const max_controller_count: u32 = 5;
+            gamepad_manager.checkHotplug() catch |err| {
+                std.debug.print("Hotplug check error: {}\n", .{err});
+            };
+
+            const max_controller_count: u32 = 4;
 
             for (0..max_controller_count) |controller_index| {
                 const our_controller_index = controller_index + 1;
-                if (our_controller_index < 5) {
-                    const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
-                    const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
 
-                    new_controller.is_connected = true;
-                    new_controller.is_analog = old_controller.is_analog;
+                const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
+                const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
 
-                    for (0..new_controller.button.buttons.len) |button_index| {
-                        new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
+                const slot = &gamepad_manager.slots[controller_index];
+                if (slot.is_valid) {
+                    if (slot.fd) |fd| {
+                        new_controller.is_connected = true;
+                        new_controller.is_analog = old_controller.is_analog;
+
+                        for (0..new_controller.button.buttons.len) |button_index| {
+                            new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
+                        }
+
+                        // Process Gamepads
+                        const success = linuxProcessGamepads(fd, &events, new_controller);
+                        if (!success) {
+                            std.posix.close(fd);
+                            slot.fd = null;
+                            slot.is_valid = false;
+                            new_controller.is_connected = false;
+                        } else if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
+                            new_controller.is_analog = true;
+                        } else {
+                            new_controller.is_analog = false;
+                        }
                     }
-
-                    // Process Gamepads
-                    try linuxProcessGamepads(gamepad_fd, &events, new_controller);
-
-                    if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
-                        new_controller.is_analog = true;
-                    } else {
-                        new_controller.is_analog = false;
-                    }
+                } else {
+                    new_controller.is_connected = false;
+                    new_controller.is_analog = false;
                 }
             }
 
@@ -763,10 +955,6 @@ pub fn run() !void {
             };
 
             handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
-
-            if (!audio_state.sound_is_valid.load(.acquire)) {
-                audio_state.sound_is_valid.store(true, .release);
-            }
 
             const audio_wall_clock = try linuxGetWallClock();
             const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
@@ -808,6 +996,24 @@ pub fn run() !void {
                     audio_state.write_cursor.store(new_write_cursor, .release);
                 } else {
                     std.debug.print("Ring buffer full! Skipping audio frame.\n", .{});
+                }
+            }
+
+            if (!audio_state.sound_is_valid.load(.acquire)) {
+                const current_write = audio_state.write_cursor.load(.acquire);
+                const current_read = audio_state.read_cursor.load(.acquire);
+                const current_buffered = if (current_write >= current_read)
+                    current_write - current_read
+                else
+                    (audio_state.ring_buffer_size - current_read) + current_write;
+
+                if (current_buffered >= target_buffered_samples) {
+                    audio_state.sound_is_valid.store(true, .release);
+                    mini_result = mini.ma_device_start(&device);
+                    if (mini_result != mini.MA_SUCCESS) {
+                        std.debug.print("Failed to start device: {}\n", .{mini_result});
+                        return error.MiniDeviceStartFailed;
+                    }
                 }
             }
 
