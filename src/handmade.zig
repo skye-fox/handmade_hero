@@ -263,8 +263,8 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
                 game_state.blue_offset -= 1;
             }
         }
-        game_state.player_x -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
-        game_state.player_y += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
+        game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
+        game_state.player_y -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
         if (game_state.t_jump > 0) {
             game_state.player_y += @as(i32, @intFromFloat(10.0 * @sin(std.math.pi * game_state.t_jump)));
         }

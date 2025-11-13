@@ -300,19 +300,19 @@ fn linuxProcessGamepads(fd: i32, events: *[NUM_EVENTS]c.struct_input_event, new_
                     },
 
                     c.ABS_X => {
-                        new_controller.left_stick_average_x = -linuxProcessEvDevStickValue(ev.value, left_deadzone);
+                        new_controller.left_stick_average_x = linuxProcessEvDevStickValue(ev.value, left_deadzone);
                     },
 
                     c.ABS_Y => {
-                        new_controller.left_stick_average_y = linuxProcessEvDevStickValue(ev.value, left_deadzone);
+                        new_controller.left_stick_average_y = -linuxProcessEvDevStickValue(ev.value, left_deadzone);
                     },
 
                     c.ABS_RX => {
-                        new_controller.right_stick_average_x = linuxProcessEvDevStickValue(ev.value, right_deadzone);
+                        new_controller.right_stick_average_x = -linuxProcessEvDevStickValue(ev.value, right_deadzone);
                     },
 
                     c.ABS_RY => {
-                        new_controller.right_stick_average_y = -linuxProcessEvDevStickValue(ev.value, right_deadzone);
+                        new_controller.right_stick_average_y = linuxProcessEvDevStickValue(ev.value, right_deadzone);
                     },
 
                     else => {},
@@ -682,7 +682,7 @@ pub fn run() !void {
         if (context.xkb_context) |ctx| c.xkb_context_unref(ctx);
     }
 
-    const gamepad_fd = try std.posix.open("/dev/input/event4", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
+    const gamepad_fd = try std.posix.open("/dev/input/event14", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
     defer std.posix.close(gamepad_fd);
 
     var events: [NUM_EVENTS]c.struct_input_event = undefined;
