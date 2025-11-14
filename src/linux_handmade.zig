@@ -301,6 +301,7 @@ const WlContext = struct {
 
 const NUM_EVENTS: u32 = 8;
 
+var global_pause = false;
 var global_back_buffer = std.mem.zeroInit(LinuxOffscreenBuffer, .{});
 
 inline fn rdtsc() usize {
@@ -527,6 +528,12 @@ fn linuxProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sy
         c.XKB_KEY_q, c.XKB_KEY_Q => linuxProcessKeyboardMessage(&keyboard_controller.button.input.left_shoulder, is_down),
         c.XKB_KEY_e, c.XKB_KEY_E => linuxProcessKeyboardMessage(&keyboard_controller.button.input.right_shoulder, is_down),
 
+        c.XKB_KEY_p, c.XKB_KEY_P => {
+            if (debug_mode) {
+                if (is_down) global_pause = !global_pause;
+            }
+        },
+
         c.XKB_KEY_UP => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_up, is_down),
         c.XKB_KEY_Left => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_left, is_down),
         c.XKB_KEY_DOWN => linuxProcessKeyboardMessage(&keyboard_controller.button.input.action_down, is_down),
@@ -534,7 +541,7 @@ fn linuxProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sy
 
         c.XKB_KEY_Escape => {
             linuxProcessKeyboardMessage(&keyboard_controller.button.input.back, is_down);
-            if (is_down) {
+            if (debug_mode and is_down) {
                 context.running = false;
             }
         },
@@ -907,156 +914,162 @@ pub fn run() !void {
                 std.debug.print("Hotplug check error: {}\n", .{err});
             };
 
-            const max_controller_count: u32 = 4;
+            if (!global_pause) {
+                const max_controller_count: u32 = 4;
 
-            for (0..max_controller_count) |controller_index| {
-                const our_controller_index = controller_index + 1;
+                for (0..max_controller_count) |controller_index| {
+                    const our_controller_index = controller_index + 1;
 
-                const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
-                const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
+                    const old_controller: *handmade.GameControllerInput = handmade.getController(old_input, our_controller_index);
+                    const new_controller: *handmade.GameControllerInput = handmade.getController(new_input, our_controller_index);
 
-                const slot = &gamepad_manager.slots[controller_index];
-                if (slot.is_valid) {
-                    if (slot.fd) |fd| {
-                        new_controller.is_connected = true;
-                        new_controller.is_analog = old_controller.is_analog;
+                    const slot = &gamepad_manager.slots[controller_index];
+                    if (slot.is_valid) {
+                        if (slot.fd) |fd| {
+                            new_controller.is_connected = true;
+                            new_controller.is_analog = old_controller.is_analog;
 
-                        for (0..new_controller.button.buttons.len) |button_index| {
-                            new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
+                            for (0..new_controller.button.buttons.len) |button_index| {
+                                new_controller.button.buttons[button_index].ended_down = old_controller.button.buttons[button_index].ended_down;
+                            }
+
+                            new_controller.left_stick_average_x = old_controller.left_stick_average_x;
+                            new_controller.left_stick_average_y = old_controller.left_stick_average_y;
+                            new_controller.right_stick_average_x = old_controller.right_stick_average_x;
+                            new_controller.right_stick_average_y = old_controller.right_stick_average_y;
+
+                            // Process Gamepads
+                            const success = linuxProcessGamepads(fd, &events, new_controller);
+                            if (!success) {
+                                std.posix.close(fd);
+                                slot.fd = null;
+                                slot.is_valid = false;
+                                new_controller.is_connected = false;
+                            } else if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
+                                new_controller.is_analog = true;
+                            } else {
+                                new_controller.is_analog = false;
+                            }
+                        }
+                    } else {
+                        new_controller.is_connected = false;
+                        new_controller.is_analog = false;
+                    }
+                }
+
+                var thread = std.mem.zeroInit(handmade.ThreadContext, .{});
+
+                var buffer = handmade.GameOffScreenBuffer{
+                    .memory = global_back_buffer.memory,
+                    .width = global_back_buffer.width,
+                    .height = global_back_buffer.height,
+                    .pitch = global_back_buffer.pitch,
+                    .bytes_per_pixel = 4,
+                };
+
+                handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+
+                const audio_wall_clock = try linuxGetWallClock();
+                const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
+                _ = from_begin_to_audio_seconds;
+
+                const write_cursor = audio_state.write_cursor.load(.acquire);
+                const read_cursor = audio_state.read_cursor.load(.acquire);
+
+                const buffered_samples = if (write_cursor >= read_cursor)
+                    write_cursor - read_cursor
+                else
+                    (audio_state.ring_buffer_size - read_cursor) + write_cursor;
+
+                const target_frames_ahead: u32 = 4;
+                const samples_per_frame: u32 = @intFromFloat((samples_per_second_float / game_update_hz) * channels_float);
+                const target_buffered_samples = samples_per_frame * target_frames_ahead;
+
+                if (buffered_samples < target_buffered_samples) {
+                    const free_samples = if (read_cursor > write_cursor)
+                        read_cursor - write_cursor - 1
+                    else
+                        (audio_state.ring_buffer_size - write_cursor) + read_cursor - 1;
+
+                    if (free_samples >= total_samples) {
+                        var sound_buffer = handmade.GameSoundOutputBuffer{
+                            .samples_per_second = @intCast(audio_state.samples_per_second),
+                            .sample_count = @intCast(expected_frames_per_update),
+                            .samples = temp_buffer.ptr,
+                        };
+
+                        handmade.getSoundSamples(&thread, &game_memory, &sound_buffer);
+
+                        for (0..total_samples) |i| {
+                            const buffer_index = (write_cursor + @as(u32, @intCast(i))) % audio_state.ring_buffer_size;
+                            audio_state.ring_buffer[buffer_index] = temp_buffer[i];
                         }
 
-                        new_controller.left_stick_average_x = old_controller.left_stick_average_x;
-                        new_controller.left_stick_average_y = old_controller.left_stick_average_y;
-                        new_controller.right_stick_average_x = old_controller.right_stick_average_x;
-                        new_controller.right_stick_average_y = old_controller.right_stick_average_y;
+                        const new_write_cursor = (write_cursor + total_samples) % audio_state.ring_buffer_size;
+                        audio_state.write_cursor.store(new_write_cursor, .release);
+                    } else {
+                        std.debug.print("Ring buffer full! Skipping audio frame.\n", .{});
+                    }
+                }
 
-                        // Process Gamepads
-                        const success = linuxProcessGamepads(fd, &events, new_controller);
-                        if (!success) {
-                            std.posix.close(fd);
-                            slot.fd = null;
-                            slot.is_valid = false;
-                            new_controller.is_connected = false;
-                        } else if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
-                            new_controller.is_analog = true;
-                        } else {
-                            new_controller.is_analog = false;
+                if (!audio_state.sound_is_valid.load(.acquire)) {
+                    const current_write = audio_state.write_cursor.load(.acquire);
+                    const current_read = audio_state.read_cursor.load(.acquire);
+                    const current_buffered = if (current_write >= current_read)
+                        current_write - current_read
+                    else
+                        (audio_state.ring_buffer_size - current_read) + current_write;
+
+                    if (current_buffered >= target_buffered_samples) {
+                        audio_state.sound_is_valid.store(true, .release);
+                        mini_result = mini.ma_device_start(&device);
+                        if (mini_result != mini.MA_SUCCESS) {
+                            std.debug.print("Failed to start device: {}\n", .{mini_result});
+                            return error.MiniDeviceStartFailed;
                         }
                     }
-                } else {
-                    new_controller.is_connected = false;
-                    new_controller.is_analog = false;
+                }
+
+                if (context.frame_callback) |cb| {
+                    cb.destroy();
+                }
+
+                context.frame_callback = try surface.frame();
+                context.frame_callback.?.setListener(*WlContext, wlFrameListener, &context);
+                context.waiting_for_frame = true;
+
+                flip_wall_clock = try linuxGetWallClock();
+
+                surface.attach(global_back_buffer.buffer, 0, 0);
+                surface.damage(0, 0, context.width, context.height);
+                surface.commit();
+
+                const temp: *handmade.GameInput = new_input;
+                new_input = old_input;
+                old_input = temp;
+            }
+
+            if (global_pause) {
+                if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+            } else {
+                while (context.waiting_for_frame and context.running) {
+                    if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
                 }
             }
 
-            var thread = std.mem.zeroInit(handmade.ThreadContext, .{});
+            const frame_end = try linuxGetWallClock();
+            const frame_end_cycles: i64 = @intCast(rdtsc());
 
-            var buffer = handmade.GameOffScreenBuffer{
-                .memory = global_back_buffer.memory,
-                .width = global_back_buffer.width,
-                .height = global_back_buffer.height,
-                .pitch = global_back_buffer.pitch,
-                .bytes_per_pixel = 4,
-            };
+            const ms_per_frame: f32 = 1000.0 * linuxGetSecondsElapsed(frame_start, frame_end);
+            const cycles_elapsed: i64 = frame_end_cycles - frame_start_cycles;
 
-            handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+            const frames_per_second: f32 = 1000.0 / ms_per_frame;
+            const mega_cycles_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
+            _ = frames_per_second;
+            _ = mega_cycles_per_frame;
 
-            const audio_wall_clock = try linuxGetWallClock();
-            const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
-            _ = from_begin_to_audio_seconds;
-
-            const write_cursor = audio_state.write_cursor.load(.acquire);
-            const read_cursor = audio_state.read_cursor.load(.acquire);
-
-            const buffered_samples = if (write_cursor >= read_cursor)
-                write_cursor - read_cursor
-            else
-                (audio_state.ring_buffer_size - read_cursor) + write_cursor;
-
-            const target_frames_ahead: u32 = 4;
-            const samples_per_frame: u32 = @intFromFloat((samples_per_second_float / game_update_hz) * channels_float);
-            const target_buffered_samples = samples_per_frame * target_frames_ahead;
-
-            if (buffered_samples < target_buffered_samples) {
-                const free_samples = if (read_cursor > write_cursor)
-                    read_cursor - write_cursor - 1
-                else
-                    (audio_state.ring_buffer_size - write_cursor) + read_cursor - 1;
-
-                if (free_samples >= total_samples) {
-                    var sound_buffer = handmade.GameSoundOutputBuffer{
-                        .samples_per_second = @intCast(audio_state.samples_per_second),
-                        .sample_count = @intCast(expected_frames_per_update),
-                        .samples = temp_buffer.ptr,
-                    };
-
-                    handmade.getSoundSamples(&thread, &game_memory, &sound_buffer);
-
-                    for (0..total_samples) |i| {
-                        const buffer_index = (write_cursor + @as(u32, @intCast(i))) % audio_state.ring_buffer_size;
-                        audio_state.ring_buffer[buffer_index] = temp_buffer[i];
-                    }
-
-                    const new_write_cursor = (write_cursor + total_samples) % audio_state.ring_buffer_size;
-                    audio_state.write_cursor.store(new_write_cursor, .release);
-                } else {
-                    std.debug.print("Ring buffer full! Skipping audio frame.\n", .{});
-                }
-            }
-
-            if (!audio_state.sound_is_valid.load(.acquire)) {
-                const current_write = audio_state.write_cursor.load(.acquire);
-                const current_read = audio_state.read_cursor.load(.acquire);
-                const current_buffered = if (current_write >= current_read)
-                    current_write - current_read
-                else
-                    (audio_state.ring_buffer_size - current_read) + current_write;
-
-                if (current_buffered >= target_buffered_samples) {
-                    audio_state.sound_is_valid.store(true, .release);
-                    mini_result = mini.ma_device_start(&device);
-                    if (mini_result != mini.MA_SUCCESS) {
-                        std.debug.print("Failed to start device: {}\n", .{mini_result});
-                        return error.MiniDeviceStartFailed;
-                    }
-                }
-            }
-
-            if (context.frame_callback) |cb| {
-                cb.destroy();
-            }
-
-            context.frame_callback = try surface.frame();
-            context.frame_callback.?.setListener(*WlContext, wlFrameListener, &context);
-            context.waiting_for_frame = true;
-
-            flip_wall_clock = try linuxGetWallClock();
-
-            surface.attach(global_back_buffer.buffer, 0, 0);
-            surface.damage(0, 0, context.width, context.height);
-            surface.commit();
-
-            const temp: *handmade.GameInput = new_input;
-            new_input = old_input;
-            old_input = temp;
+            // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_second, mega_cycles_per_frame });
         }
-
-        while (context.waiting_for_frame and context.running) {
-            if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
-        }
-
-        const frame_end = try linuxGetWallClock();
-        const frame_end_cycles: i64 = @intCast(rdtsc());
-
-        const ms_per_frame: f32 = 1000.0 * linuxGetSecondsElapsed(frame_start, frame_end);
-        const cycles_elapsed: i64 = frame_end_cycles - frame_start_cycles;
-
-        const frames_per_second: f32 = 1000.0 / ms_per_frame;
-        const mega_cycles_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
-        _ = frames_per_second;
-        _ = mega_cycles_per_frame;
-
-        // std.debug.print("ms/f: {d:.2}, f/s: {d:.2}, mega_cycles/f {d:.2}\n", .{ ms_per_frame, frames_per_second, mega_cycles_per_frame });
     }
     if (context.frame_callback) |cb| {
         cb.destroy();
