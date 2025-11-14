@@ -960,8 +960,8 @@ pub fn run() !void {
                                 new_controller.is_connected = false;
                             } else if (new_controller.left_stick_average_x != 0.0 or
                                 new_controller.left_stick_average_y != 0.0 or
-                                new_controller.right_stick_average_x == 0.0 or
-                                new_controller.right_stick_average_y == 0.0)
+                                new_controller.right_stick_average_x != 0.0 or
+                                new_controller.right_stick_average_y != 0.0)
                             {
                                 new_controller.is_analog = true;
                             } else {
