@@ -153,9 +153,8 @@ const LinuxGamepadManager = struct {
         const retry_delay_ms: u32 = 10;
 
         while (retries < max_retries) : (retries += 1) {
-            std.Thread.sleep(retry_delay_ms * std.time.ns_per_ms);
-
             const fd = std.posix.openZ(path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| {
+                std.Thread.sleep(retry_delay_ms * std.time.ns_per_ms);
                 if (err == error.AccessDenied and retries < max_retries - 1) continue;
                 return;
             };
@@ -329,70 +328,84 @@ inline fn linuxGetSecondsElapsed(start: std.posix.timespec, end: std.posix.times
 // blocking and the write doesn't protect against lost data!
 
 pub fn debugPlatformReadEntireFile(thread: *handmade.ThreadContext, file_path: [*:0]const u8) DEBUGReadFileResult {
-    const result = DEBUGReadFileResult{
+    _ = thread;
+
+    var result = DEBUGReadFileResult{
         .content_size = 0,
         .content = null,
     };
-    _ = thread;
-    _ = file_path;
 
-    // const file_handle: foundation.HANDLE = fs.CreateFileA(file_path, fs.FILE_GENERIC_READ, fs.FILE_SHARE_READ, null, fs.OPEN_EXISTING, fs.FILE_ATTRIBUTE_NORMAL, null);
-    // if (file_handle != foundation.INVALID_HANDLE_VALUE) {
-    //     var file_size: foundation.LARGE_INTEGER = undefined;
-    //     if (zig32.zig.SUCCEEDED(fs.GetFileSizeEx(file_handle, &file_size))) {
-    //         std.debug.assert(file_size.QuadPart <= 0xFFFFFFFF);
-    //         const file_size32: u32 = @intCast(file_size.QuadPart);
-    //         result.content = zig32_mem.VirtualAlloc(null, file_size32, reserve_and_commit, zig32_mem.PAGE_READWRITE);
-    //         if (result.content) |content| {
-    //             var bytes_read: win.DWORD = 0;
-    //             if (zig32.zig.SUCCEEDED(fs.ReadFile(file_handle, content, file_size32, &bytes_read, null)) and file_size32 == bytes_read) {
-    //                 std.debug.print("File read successfully.\n", .{});
-    //                 result.content_size = file_size32;
-    //             } else {
-    //                 std.debug.print("Failed to read.\n", .{});
-    //                 debugPlatformFreeFileMemory(thread, content);
-    //                 result.content = null;
-    //             }
-    //         } else {
-    //             // TODO: Logging
-    //         }
-    //     } else {
-    //         // TODO: Logging
-    //     }
-    //     zig32.zig.closeHandle(file_handle);
-    // } else {
-    //     // TODO: Logging
-    // }
+    std.debug.print("file_path: {s}\n", .{file_path});
+
+    const fd: std.posix.fd_t = std.posix.openZ(file_path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| {
+        std.debug.print("Failed to open file: {}.\n", .{err});
+        return result;
+    };
+    defer std.posix.close(fd);
+
+    const stat = std.posix.fstat(fd) catch |err| {
+        std.debug.print("Failed to get file stats: {}.\n", .{err});
+        return result;
+    };
+
+    std.debug.assert(stat.size <= 0xFFFFFFFF);
+    const file_size: u32 = @intCast(stat.size);
+    const content = std.posix.mmap(null, file_size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch |err| {
+        std.debug.print("Failed to map memory: {}.\n", .{err});
+        return result;
+    };
+
+    const file = std.fs.File{ .handle = fd };
+    const bytes_read = file.readAll(content) catch |err| {
+        std.debug.print("Failed to read file: {}.\n", .{err});
+        std.posix.munmap(content);
+        return result;
+    };
+
+    if (bytes_read == file_size) {
+        result.content = content.ptr;
+        result.content_size = file_size;
+        std.debug.print("File read successfully.\n", .{});
+    } else {
+        std.debug.print("Failed to read entire file.\n", .{});
+        std.posix.munmap(content);
+    }
+
     return result;
 }
 
-pub fn debugPlatformFreeFileMemory(thread: *handmade.ThreadContext, memory: ?*anyopaque) void {
+pub fn debugPlatformFreeFileMemory(thread: *handmade.ThreadContext, file: DEBUGReadFileResult) void {
     _ = thread;
-    if (memory) |_| {
-        // _ = zig32_mem.VirtualFree(memory, 0, zig32_mem.MEM_RELEASE);
+    if (file.content) |content| {
+        const aligned_memory: [*]align(4096) u8 = @ptrCast(@alignCast(content));
+        std.posix.munmap(aligned_memory[0..file.content_size]);
     }
 }
 
 pub fn debugPlatformWriteEntireFile(thread: *handmade.ThreadContext, file_name: [*:0]const u8, memory_size: u32, memory: ?*anyopaque) bool {
     _ = thread;
-    _ = file_name;
-    _ = memory_size;
-    _ = memory;
-    const result = false;
+    var result = false;
 
-    // const file_handle = fs.CreateFileA(file_name, fs.FILE_GENERIC_WRITE, fs.FILE_SHARE_NONE, null, fs.CREATE_ALWAYS, fs.FILE_ATTRIBUTE_NORMAL, null);
-    // defer zig32.zig.closeHandle(file_handle);
-    // if (file_handle != foundation.INVALID_HANDLE_VALUE) {
-    //     var bytes_written: win.DWORD = 0;
-    //     if (zig32.zig.SUCCEEDED(fs.WriteFile(file_handle, memory, memory_size, &bytes_written, null))) {
-    //         std.debug.print("File written successfully\n", .{});
-    //         result = bytes_written == memory_size;
-    //     } else {
-    //         // TODO: Logging
-    //     }
-    // } else {
-    //     // TODO: Logging
-    // }
+    const fd: std.posix.fd_t = std.posix.openZ(file_name, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) catch |err| {
+        std.debug.print("Failed to open file: {}.\n", .{err});
+        return result;
+    };
+    defer std.posix.close(fd);
+
+    if (memory) |mem| {
+        const buffer: [*]const u8 = @ptrCast(mem);
+        const bytes_to_write = buffer[0..memory_size];
+
+        const file = std.fs.File{ .handle = fd };
+        file.writeAll(bytes_to_write) catch |err| {
+            std.debug.print("Failed to write file: {}.\n", .{err});
+            return result;
+        };
+
+        result = true;
+        std.debug.print("File written successfully.\n", .{});
+    }
+
     return result;
 }
 
@@ -432,7 +445,7 @@ fn miniCallback(pDevice: ?*anyopaque, pOutput: ?*anyopaque, pInput: ?*const anyo
     } else {
         @memset(output[0..samples_to_read], 0.0);
         _ = audio_state.underrun_count.fetchAdd(1, .monotonic);
-        std.debug.print("Audio underrun! Available: {}, Needed {}\n", .{ available_samples, samples_to_read });
+        // std.debug.print("Audio underrun! Available: {}, Needed {}, count: {}.\n", .{ available_samples, samples_to_read, audio_state.underrun_count.load(.acquire) });
     }
 }
 
@@ -945,7 +958,11 @@ pub fn run() !void {
                                 slot.fd = null;
                                 slot.is_valid = false;
                                 new_controller.is_connected = false;
-                            } else if (new_controller.left_stick_average_x != 0.0 or new_controller.left_stick_average_y != 0.0) {
+                            } else if (new_controller.left_stick_average_x != 0.0 or
+                                new_controller.left_stick_average_y != 0.0 or
+                                new_controller.right_stick_average_x == 0.0 or
+                                new_controller.right_stick_average_y == 0.0)
+                            {
                                 new_controller.is_analog = true;
                             } else {
                                 new_controller.is_analog = false;

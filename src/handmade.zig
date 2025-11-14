@@ -19,7 +19,7 @@ pub const GameMemory = struct {
     transient_storage: ?*anyopaque,
 
     debugPlatformReadEntireFile: *const fn (*ThreadContext, [*:0]const u8) platform.DEBUGReadFileResult,
-    debugPlatformFreeFileMemory: *const fn (*ThreadContext, ?*anyopaque) void,
+    debugPlatformFreeFileMemory: *const fn (*ThreadContext, platform.DEBUGReadFileResult) void,
     debugPlatformWriteEntireFile: *const fn (*ThreadContext, [*:0]const u8, u32, ?*anyopaque) bool,
 };
 
@@ -232,7 +232,7 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
             const file: platform.DEBUGReadFileResult = memory.debugPlatformReadEntireFile(thread, file_path);
             if (file.content) |content| {
                 _ = memory.debugPlatformWriteEntireFile(thread, "test.txt", file.content_size, content);
-                memory.debugPlatformFreeFileMemory(thread, content);
+                memory.debugPlatformFreeFileMemory(thread, file);
             }
         }
         memory.is_initialized = true;
@@ -245,6 +245,8 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
             game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_x));
             // game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
             // game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
+            game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
+            game_state.player_y -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
         } else {
             // NOTE: Digital
             if (controller.button.input.move_up.ended_down) {
@@ -263,8 +265,6 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
                 game_state.blue_offset -= 1;
             }
         }
-        game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
-        game_state.player_y -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
         if (game_state.t_jump > 0) {
             game_state.player_y += @as(i32, @intFromFloat(10.0 * @sin(std.math.pi * game_state.t_jump)));
         }

@@ -149,7 +149,7 @@ pub fn debugPlatformReadEntireFile(thread: *handmade.ThreadContext, file_path: [
                     result.content_size = file_size32;
                 } else {
                     std.debug.print("Failed to read.\n", .{});
-                    debugPlatformFreeFileMemory(thread, content);
+                    debugPlatformFreeFileMemory(thread, result);
                     result.content = null;
                 }
             } else {
@@ -165,10 +165,10 @@ pub fn debugPlatformReadEntireFile(thread: *handmade.ThreadContext, file_path: [
     return result;
 }
 
-pub fn debugPlatformFreeFileMemory(thread: *handmade.ThreadContext, memory: ?*anyopaque) void {
+pub fn debugPlatformFreeFileMemory(thread: *handmade.ThreadContext, file: DEBUGReadFileResult) void {
     _ = thread;
-    if (memory) |_| {
-        _ = zig32_mem.VirtualFree(memory, 0, zig32_mem.MEM_RELEASE);
+    if (file.content) |content| {
+        _ = zig32_mem.VirtualFree(content, 0, zig32_mem.MEM_RELEASE);
     }
 }
 
