@@ -296,6 +296,11 @@ const WlContext = struct {
     height: i32 = 720,
     configured: bool = false,
     running: bool = true,
+
+    mouse_x: i32 = 0,
+    mouse_y: i32 = 0,
+    mouse_z: i32 = 0,
+    mouse_buttons: [5]bool = [_]bool{false} ** 5,
 };
 
 const NUM_EVENTS: u32 = 8;
@@ -334,8 +339,6 @@ pub fn debugPlatformReadEntireFile(thread: *handmade.ThreadContext, file_path: [
         .content_size = 0,
         .content = null,
     };
-
-    std.debug.print("file_path: {s}\n", .{file_path});
 
     const fd: std.posix.fd_t = std.posix.openZ(file_path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| {
         std.debug.print("Failed to open file: {}.\n", .{err});
@@ -618,6 +621,39 @@ fn wlRegistryListener(registry: *wl.Registry, event: wl.Registry.Event, context:
     }
 }
 
+fn wlPointerListener(_: *wl.Pointer, event: wl.Pointer.Event, context: *WlContext) void {
+    switch (event) {
+        .enter => |enter| {
+            context.mouse_x = @intFromFloat(enter.surface_x.toDouble());
+            context.mouse_y = @intFromFloat(enter.surface_y.toDouble());
+        },
+        .leave => {},
+        .motion => |motion| {
+            context.mouse_x = @intFromFloat(motion.surface_x.toDouble());
+            context.mouse_y = @intFromFloat(motion.surface_y.toDouble());
+        },
+        .button => |button| {
+            const is_down = button.state == .pressed;
+
+            switch (button.button) {
+                c.BTN_LEFT => context.mouse_buttons[0] = is_down,
+                c.BTN_RIGHT => context.mouse_buttons[1] = is_down,
+                c.BTN_MIDDLE => context.mouse_buttons[2] = is_down,
+                c.BTN_SIDE => context.mouse_buttons[3] = is_down,
+                c.BTN_EXTRA => context.mouse_buttons[4] = is_down,
+                else => {},
+            }
+        },
+        .axis => |axis| {
+            if (axis.axis == .vertical_scroll) {
+                const scroll_delta: i32 = @intFromFloat(axis.value.toDouble());
+                context.mouse_z += scroll_delta;
+            }
+        },
+        else => {},
+    }
+}
+
 fn wlKeyboardListener(_: *wl.Keyboard, event: wl.Keyboard.Event, kb_context: *WlKeyboardContext) void {
     switch (event) {
         .enter => {},
@@ -686,6 +722,13 @@ fn wlSeatListener(seat: *wl.Seat, event: wl.Seat.Event, context: *WlContext) voi
         .capabilities => |cap| {
             if (cap.capabilities.keyboard) {
                 context.keyboard = seat.getKeyboard() catch null;
+            }
+
+            if (cap.capabilities.pointer) {
+                context.mouse = seat.getPointer() catch null;
+                if (context.mouse) |mouse| {
+                    mouse.setListener(*WlContext, wlPointerListener, context);
+                }
             }
         },
         .name => {},
@@ -928,6 +971,15 @@ pub fn run() !void {
             };
 
             if (!global_pause) {
+                new_input.mouse_x = context.mouse_x;
+                new_input.mouse_y = context.mouse_y;
+                new_input.mouse_z = 0;
+
+                for (0..new_input.mouse_buttons.len) |button_index| {
+                    const is_down = context.mouse_buttons[button_index];
+                    linuxProcessKeyboardMessage(&new_input.mouse_buttons[button_index], is_down);
+                }
+
                 const max_controller_count: u32 = 4;
 
                 for (0..max_controller_count) |controller_index| {
