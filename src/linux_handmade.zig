@@ -245,8 +245,8 @@ const LinuxRecordedInput = struct {
 };
 
 const LinuxGameCode = struct {
-    game_code_dll: ?*anyopaque,
-    dll_last_write_time: bool,
+    game_code_so: ?std.DynLib,
+    so_last_write_time: i128,
 
     updateAndRender: ?handmade.UpdateAndRenderFnPtr,
     getSoundSamples: ?handmade.GetSoundSamplesFnPtr,
@@ -295,7 +295,7 @@ const WlContext = struct {
     width: i32 = 1280,
     height: i32 = 720,
     configured: bool = false,
-    running: bool = true,
+    running: bool,
 
     mouse_x: i32 = 0,
     mouse_y: i32 = 0,
@@ -357,11 +357,11 @@ pub fn debugPlatformReadEntireFile(thread: *handmade.ThreadContext, file_path: [
         std.debug.print("Failed to map memory: {}.\n", .{err});
         return result;
     };
+    errdefer std.posix.munmap(content);
 
     const file = std.fs.File{ .handle = fd };
     const bytes_read = file.readAll(content) catch |err| {
         std.debug.print("Failed to read file: {}.\n", .{err});
-        std.posix.munmap(content);
         return result;
     };
 
@@ -413,6 +413,103 @@ pub fn debugPlatformWriteEntireFile(thread: *handmade.ThreadContext, file_name: 
 }
 
 // NOTE: END-->
+
+fn catStrings(source_A_count: usize, source_A: []const u8, source_B_count: usize, source_B: []const u8, dest_count: usize, dest: [*:0]u8) void {
+    std.debug.assert(source_A_count + source_B_count <= dest_count);
+
+    for (0..source_A_count) |i| {
+        dest[i] = source_A[i];
+    }
+    for (0..source_B_count) |i| {
+        dest[source_A_count + i] = source_B[i];
+    }
+    dest[source_A_count + source_B_count] = 0;
+}
+
+fn linuxBuildEXEPathFileName(state: *LinuxState, file_name: []const u8, dest_count: usize, dest: [*:0]u8) void {
+    catStrings(
+        state.one_past_last_exe_file_name_slash.? - @as([*:0]u8, @ptrCast(&state.exe_file_path)),
+        &state.exe_file_path,
+        file_name.len,
+        file_name,
+        dest_count,
+        dest,
+    );
+}
+
+fn linuxGetEXEFileName(state: *LinuxState) void {
+    const path = std.fs.selfExePath(&state.exe_file_path) catch |err| {
+        std.debug.print("Failed to get exe path: {}.\n", .{err});
+        return;
+    };
+    state.one_past_last_exe_file_name_slash = @as([*:0]u8, @ptrCast(&state.exe_file_path));
+    const scan: [*:0]u8 = @ptrCast(&state.exe_file_path);
+    for (0..path.len) |i| {
+        if (scan[i] == '/') {
+            state.one_past_last_exe_file_name_slash = scan + i + 1;
+        }
+    }
+}
+
+fn linuxGetLastWriteTime(file_name: [*:0]const u8) i128 {
+    var last_write_time: i128 = 0;
+
+    const file = std.fs.cwd().openFileZ(file_name, .{}) catch |err| {
+        std.debug.print("Failed to open file: {}.\n", .{err});
+        return last_write_time;
+    };
+    defer file.close();
+
+    const stat = file.stat() catch |err| {
+        std.debug.print("Failed to get file stats: {}.\n", .{err});
+        return last_write_time;
+    };
+    last_write_time = stat.mtime;
+
+    return last_write_time;
+}
+
+fn linuxUnloadGameCode(game_code: *LinuxGameCode) void {
+    if (game_code.game_code_so) |*lib| {
+        lib.close();
+        game_code.game_code_so = null;
+    }
+
+    game_code.is_valid = false;
+    game_code.updateAndRender = null;
+    game_code.getSoundSamples = null;
+}
+
+fn linuxLoadGameCode(source_so_name: [*:0]const u8, temp_so_name: [*:0]const u8) LinuxGameCode {
+    var result = std.mem.zeroInit(LinuxGameCode, .{});
+    const source_slice = std.mem.span(source_so_name);
+    const temp_slice = std.mem.span(temp_so_name);
+
+    result.so_last_write_time = linuxGetLastWriteTime(source_so_name);
+    std.fs.copyFileAbsolute(source_slice, temp_slice, .{}) catch |err| {
+        std.debug.print("Failed to copy shared library: {}.\n", .{err});
+        return result;
+    };
+
+    result.game_code_so = std.DynLib.openZ(temp_so_name) catch |err| {
+        std.debug.print("Failed to open shared libray: {}.\n", .{err});
+        return result;
+    };
+
+    if (result.game_code_so) |*lib| {
+        result.updateAndRender = lib.lookup(handmade.UpdateAndRenderFnPtr, "gameUpdateAndRender");
+        result.getSoundSamples = lib.lookup(handmade.GetSoundSamplesFnPtr, "getSoundSamples");
+
+        result.is_valid = (result.updateAndRender != null and result.getSoundSamples != null);
+
+        if (!result.is_valid) {
+            result.updateAndRender = null;
+            result.getSoundSamples = null;
+        }
+    }
+
+    return result;
+}
 
 fn miniCallback(pDevice: ?*anyopaque, pOutput: ?*anyopaque, pInput: ?*const anyopaque, frame_count: u32) callconv(.c) void {
     _ = pInput;
@@ -579,9 +676,11 @@ fn wlCreateBuffer(buffer: *LinuxOffscreenBuffer, shm: *wl.Shm, width: i32, heigh
     buffer.pitch = @intCast(width * 4);
     const size: u64 = @intCast(buffer.pitch * @as(u64, @intCast(height)));
     const fd = try std.posix.memfd_create("handmade_hero", 0);
+    defer std.posix.close(fd);
     try std.posix.ftruncate(fd, size);
 
     buffer.memory = try std.posix.mmap(null, size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
+    errdefer std.posix.munmap(buffer.memory);
 
     const pool = try shm.createPool(fd, @intCast(size));
     defer pool.destroy();
@@ -772,6 +871,13 @@ fn wlWMBaseListener(_: *xdg.WmBase, event: xdg.WmBase.Event, wm_base: *xdg.WmBas
 pub fn run() !void {
     var state = std.mem.zeroes(LinuxState);
 
+    linuxGetEXEFileName(&state);
+    var source_game_code_so_full_path: [260:0]u8 = undefined;
+    linuxBuildEXEPathFileName(&state, "libhandmade_hero.so", @sizeOf(@TypeOf(source_game_code_so_full_path)), &source_game_code_so_full_path);
+
+    var temp_game_code_so_full_path: [260:0]u8 = undefined;
+    linuxBuildEXEPathFileName(&state, "libhandmade_temp.so", @sizeOf(@TypeOf(temp_game_code_so_full_path)), &temp_game_code_so_full_path);
+
     const display = try wl.Display.connect(null);
     defer display.disconnect();
 
@@ -807,6 +913,7 @@ pub fn run() !void {
     surface.commit();
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
 
+    context.running = true;
     while (!context.configured and context.running) {
         if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
     }
@@ -945,7 +1052,14 @@ pub fn run() !void {
         kbd.setListener(*WlKeyboardContext, wlKeyboardListener, &keyboard_context);
     }
 
+    var game: LinuxGameCode = linuxLoadGameCode(&source_game_code_so_full_path, &temp_game_code_so_full_path);
     while (context.running) {
+        const new_so_write_time = linuxGetLastWriteTime(&source_game_code_so_full_path);
+        if (new_so_write_time > game.so_last_write_time) {
+            linuxUnloadGameCode(&game);
+            game = linuxLoadGameCode(&source_game_code_so_full_path, &temp_game_code_so_full_path);
+        }
+
         const frame_start = try linuxGetWallClock();
         const frame_start_cycles: i64 = @intCast(rdtsc());
 
@@ -1036,7 +1150,8 @@ pub fn run() !void {
                     .bytes_per_pixel = 4,
                 };
 
-                handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
+                if (game.updateAndRender) |updateAndRender| updateAndRender(&thread, &game_memory, new_input, &buffer);
+                // handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
 
                 const audio_wall_clock = try linuxGetWallClock();
                 const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
@@ -1067,7 +1182,8 @@ pub fn run() !void {
                             .samples = temp_buffer.ptr,
                         };
 
-                        handmade.getSoundSamples(&thread, &game_memory, &sound_buffer);
+                        if (game.getSoundSamples) |getSoundSamples| getSoundSamples(&thread, &game_memory, &sound_buffer);
+                        // handmade.getSoundSamples(&thread, &game_memory, &sound_buffer);
 
                         for (0..total_samples) |i| {
                             const buffer_index = (write_cursor + @as(u32, @intCast(i))) % audio_state.ring_buffer_size;

@@ -26,7 +26,12 @@ pub fn build(b: *std.Build) void {
         .name = "handmade_hero",
         .root_module = game_module,
     });
-    b.installArtifact(lib);
+
+    const install_lib = b.addInstallArtifact(lib, .{ .dest_dir = .{
+        .override = .{ .custom = "bin" },
+    } });
+
+    b.getInstallStep().dependOn(&install_lib.step);
 
     exe.linkLibC();
 

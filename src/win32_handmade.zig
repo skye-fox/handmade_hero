@@ -195,6 +195,8 @@ pub fn debugPlatformWriteEntireFile(thread: *handmade.ThreadContext, file_name: 
 // NOTE: END-->
 
 fn catStrings(source_A_count: usize, source_A: []const u8, source_B_count: usize, source_B: []const u8, dest_count: usize, dest: [*:0]u8) void {
+    std.debug.assert(source_A_count + source_B_count <= dest_count);
+
     for (0..source_A_count) |i| {
         dest[i] = source_A[i];
     }
@@ -202,7 +204,6 @@ fn catStrings(source_A_count: usize, source_A: []const u8, source_B_count: usize
         dest[source_A_count + i] = source_B[i];
     }
     dest[source_A_count + source_B_count] = 0;
-    _ = dest_count;
 }
 
 fn win32BuildEXEPathFileName(state: *Win32State, file_name: []const u8, dest_count: usize, dest: [*:0]u8) void {
