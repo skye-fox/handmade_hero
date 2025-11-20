@@ -91,10 +91,18 @@ const LinuxGamepadManager = struct {
     fn enumerateDevices(self: *LinuxGamepadManager) !void {
         var slot_index: usize = 0;
 
-        var event_num: u32 = 0;
-        while (event_num < 32 and slot_index < 4) : (event_num += 1) {
+        var dir = std.fs.openDirAbsolute("/dev/input", .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var iter = dir.iterate();
+
+        while (try iter.next()) |entry| {
+            if (slot_index >= self.slots.len) break;
+
+            if (!std.mem.startsWith(u8, entry.name, "event")) continue;
+
             var path_buf: [64]u8 = undefined;
-            const path = std.fmt.bufPrintZ(&path_buf, "/dev/input/event{d}", .{event_num}) catch continue;
+            const path = std.fmt.bufPrintZ(&path_buf, "/dev/input/{s}", .{entry.name}) catch continue;
 
             const fd = std.posix.openZ(path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
 
@@ -105,7 +113,6 @@ const LinuxGamepadManager = struct {
                 @memcpy(slot.device_path[0..path.len], path);
                 slot.device_path_len = path.len;
                 slot.is_valid = true;
-
                 slot_index += 1;
             } else {
                 std.posix.close(fd);
@@ -271,6 +278,10 @@ const LinuxOffscreenBuffer = struct {
     width: i32,
     height: i32,
     pitch: usize,
+
+    pool: ?*wl.ShmPool,
+    fd: ?std.posix.fd_t,
+    capacity: usize,
 };
 
 const WlKeyboardContext = struct {
@@ -682,22 +693,35 @@ fn linuxProcessKeyboardMessage(new_state: *handmade.GameButtonState, is_down: bo
     }
 }
 
-fn wlCreateBuffer(buffer: *LinuxOffscreenBuffer, shm: *wl.Shm, width: i32, height: i32) !void {
+fn wlResizeBuffer(buffer: *LinuxOffscreenBuffer, shm: *wl.Shm, width: i32, height: i32) !void {
+    const stride = @as(usize, @intCast(width)) * 4;
+    const needed_size = stride * @as(usize, @intCast(height));
+
+    if (needed_size > buffer.capacity) {
+        if (buffer.pool) |pool| pool.destroy();
+        if (buffer.memory.len > 0) std.posix.munmap(buffer.memory);
+        if (buffer.fd) |fd| std.posix.close(fd);
+
+        const fd = try std.posix.memfd_create("handmade_hero", 0);
+        try std.posix.ftruncate(fd, needed_size);
+
+        const memory = try std.posix.mmap(null, needed_size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
+
+        const pool = try shm.createPool(fd, @intCast(needed_size));
+
+        buffer.fd = fd;
+        buffer.memory = memory;
+        buffer.pool = pool;
+        buffer.capacity = needed_size;
+    }
+
+    if (buffer.buffer) |buf| buf.destroy();
+
+    buffer.buffer = try buffer.pool.?.createBuffer(0, @intCast(width), @intCast(height), @intCast(stride), wl.Shm.Format.argb8888);
+
     buffer.width = width;
     buffer.height = height;
-    buffer.pitch = @intCast(width * 4);
-    const size: u64 = @intCast(buffer.pitch * @as(u64, @intCast(height)));
-    const fd = try std.posix.memfd_create("handmade_hero", 0);
-    defer std.posix.close(fd);
-    try std.posix.ftruncate(fd, size);
-
-    buffer.memory = try std.posix.mmap(null, size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, fd, 0);
-    errdefer std.posix.munmap(buffer.memory);
-
-    const pool = try shm.createPool(fd, @intCast(size));
-    defer pool.destroy();
-
-    buffer.buffer = try pool.createBuffer(0, @intCast(width), @intCast(height), @intCast(buffer.pitch), wl.Shm.Format.argb8888);
+    buffer.pitch = @intCast(stride);
 }
 
 fn wlRegistryListener(registry: *wl.Registry, event: wl.Registry.Event, context: *WlContext) void {
@@ -1118,8 +1142,7 @@ pub fn run() !void {
     var last_cycle_count: i64 = @intCast(rdtsc());
     var flip_wall_clock = try linuxGetWallClock();
 
-    try wlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
-    defer if (global_back_buffer.buffer) |buf| buf.destroy();
+    try wlResizeBuffer(&global_back_buffer, shm, context.width, context.height);
 
     var keyboard_context = WlKeyboardContext{
         .context = &context,
@@ -1149,9 +1172,7 @@ pub fn run() !void {
         }
 
         if (global_back_buffer.width != context.width or global_back_buffer.height != context.height) {
-            global_back_buffer.buffer.?.destroy();
-            std.posix.munmap(global_back_buffer.memory);
-            try wlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
+            try wlResizeBuffer(&global_back_buffer, shm, context.width, context.height);
         }
 
         if (!context.waiting_for_frame) {
