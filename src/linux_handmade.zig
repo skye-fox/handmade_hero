@@ -278,11 +278,19 @@ const WlKeyboardContext = struct {
     keyboard_controller: ?*handmade.GameControllerInput,
 };
 
+const wlOutputInfo = struct {
+    output: ?*wl.Output = null,
+    refresh_rate: i32,
+};
+
 const WlContext = struct {
     shm: ?*wl.Shm,
     compositor: ?*wl.Compositor,
     wm_base: ?*xdg.WmBase,
     seat: ?*wl.Seat,
+    outputs: [MAX_OUTPUTS]wlOutputInfo = [_]wlOutputInfo{std.mem.zeroInit(wlOutputInfo, .{})} ** MAX_OUTPUTS,
+    output_count: usize,
+    current_output: ?*wl.Output = null,
     keyboard: ?*wl.Keyboard,
     mouse: ?*wl.Pointer,
     frame_callback: ?*wl.Callback = null,
@@ -294,6 +302,7 @@ const WlContext = struct {
 
     width: i32 = 1280,
     height: i32 = 720,
+    refresh_rate: i32,
     configured: bool = false,
     running: bool,
 
@@ -303,7 +312,12 @@ const WlContext = struct {
     mouse_buttons: [5]bool = [_]bool{false} ** 5,
 };
 
+const MAX_OUTPUTS: usize = 10;
 const NUM_EVENTS: u32 = 8;
+
+// Microsoft defined deadzone for xbox gamepads
+const LEFT_DEADZONE: i32 = 7849;
+const RIGHT_DEADZONE: i32 = 8689;
 
 var global_pause = false;
 var global_back_buffer = std.mem.zeroInit(LinuxOffscreenBuffer, .{});
@@ -545,7 +559,7 @@ fn miniCallback(pDevice: ?*anyopaque, pOutput: ?*anyopaque, pInput: ?*const anyo
     } else {
         @memset(output[0..samples_to_read], 0.0);
         _ = audio_state.underrun_count.fetchAdd(1, .monotonic);
-        // std.debug.print("Audio underrun! Available: {}, Needed {}, count: {}.\n", .{ available_samples, samples_to_read, audio_state.underrun_count.load(.acquire) });
+        std.debug.print("audio underrun.\n", .{});
     }
 }
 
@@ -583,8 +597,6 @@ fn linuxProcessGamepads(fd: std.posix.fd_t, events: *[NUM_EVENTS]c.struct_input_
                     else => {},
                 }
             } else if (ev.type == c.EV_ABS) {
-                const left_deadzone: i32 = 7849;
-                const right_deadzone: i32 = 8689;
                 switch (ev.code) {
                     c.ABS_HAT0X => {
                         linuxProcessKeyboardMessage(&new_controller.button.input.move_left, ev.value < 0);
@@ -597,19 +609,19 @@ fn linuxProcessGamepads(fd: std.posix.fd_t, events: *[NUM_EVENTS]c.struct_input_
                     },
 
                     c.ABS_X => {
-                        new_controller.left_stick_average_x = linuxProcessEvDevStickValue(ev.value, left_deadzone);
+                        new_controller.left_stick_average_x = linuxProcessEvDevStickValue(ev.value, LEFT_DEADZONE);
                     },
 
                     c.ABS_Y => {
-                        new_controller.left_stick_average_y = -linuxProcessEvDevStickValue(ev.value, left_deadzone);
+                        new_controller.left_stick_average_y = -linuxProcessEvDevStickValue(ev.value, LEFT_DEADZONE);
                     },
 
                     c.ABS_RX => {
-                        new_controller.right_stick_average_x = -linuxProcessEvDevStickValue(ev.value, right_deadzone);
+                        new_controller.right_stick_average_x = -linuxProcessEvDevStickValue(ev.value, RIGHT_DEADZONE);
                     },
 
                     c.ABS_RY => {
-                        new_controller.right_stick_average_y = linuxProcessEvDevStickValue(ev.value, right_deadzone);
+                        new_controller.right_stick_average_y = linuxProcessEvDevStickValue(ev.value, RIGHT_DEADZONE);
                     },
 
                     else => {},
@@ -714,9 +726,62 @@ fn wlRegistryListener(registry: *wl.Registry, event: wl.Registry.Event, context:
                 if (context.seat) |seat| {
                     seat.setListener(*WlContext, wlSeatListener, context);
                 }
+            } else if (std.mem.orderZ(u8, global.interface, wl.Output.interface.name) == .eq) {
+                const output = registry.bind(global.name, wl.Output, 2) catch |err| {
+                    std.debug.print("Failed to bind output interface: {}.\n", .{err});
+                    return;
+                };
+
+                if (context.output_count < MAX_OUTPUTS) {
+                    context.outputs[context.output_count] = wlOutputInfo{
+                        .output = output,
+                        .refresh_rate = 60000,
+                    };
+                    context.output_count += 1;
+
+                    output.setListener(*WlContext, wlOutputListener, context);
+                }
+                if (context.current_output == null) context.current_output = output;
             }
         },
         .global_remove => {},
+    }
+}
+
+fn wlSurfaceListener(_: *wl.Surface, event: wl.Surface.Event, context: *WlContext) void {
+    switch (event) {
+        .enter => |enter| {
+            context.current_output = enter.output;
+
+            for (0..context.output_count) |i| {
+                if (context.outputs[i].output == enter.output) {
+                    context.refresh_rate = context.outputs[i].refresh_rate;
+                    break;
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn wlOutputListener(output: *wl.Output, event: wl.Output.Event, context: *WlContext) void {
+    switch (event) {
+        .mode => |mode| {
+            if ((@as(u32, @bitCast(mode.flags)) & 1) == 1) {
+                for (0..context.output_count) |i| {
+                    if (context.outputs[i].output == output) {
+                        context.outputs[i].refresh_rate = mode.refresh;
+
+                        if (context.current_output == output) {
+                            context.refresh_rate = mode.refresh;
+                            std.debug.print("Monitor refresh rate: {} Hz\n", .{@as(f32, @floatFromInt(mode.refresh)) / 1000.0});
+                        }
+                        break;
+                    }
+                }
+            }
+        },
+        else => {},
     }
 }
 
@@ -897,6 +962,8 @@ pub fn run() !void {
     const surface = try compositor.createSurface();
     defer surface.destroy();
 
+    surface.setListener(*WlContext, wlSurfaceListener, &context);
+
     const xdg_surface = try wm_base.getXdgSurface(surface);
     defer xdg_surface.destroy();
 
@@ -920,10 +987,12 @@ pub fn run() !void {
 
     if (!context.running) return;
 
-    const monitor_refresh_hz: f32 = 144.0;
-    const game_update_hz: f32 = monitor_refresh_hz / 2.0;
-    const target_seconds_per_frame: f32 = 1.0 / game_update_hz;
-    _ = target_seconds_per_frame;
+    var current_refresh_rate: i32 = context.refresh_rate;
+    var monitor_refresh_hz: f32 = @as(f32, @floatFromInt(current_refresh_rate)) / 1000.0;
+    var game_update_hz: f32 = monitor_refresh_hz / 2.0;
+    var target_seconds_per_frame: f32 = 1.0 / game_update_hz;
+
+    std.debug.print("Using refresh rate: {} Hz.\n", .{monitor_refresh_hz});
 
     const samples_per_second: u32 = 48000;
     const channels: u32 = 2;
@@ -948,9 +1017,13 @@ pub fn run() !void {
 
     const ring_buffer: []align(4096) i16 = @alignCast(std.mem.bytesAsSlice(i16, ring_buffer_memory));
 
-    const expected_frames_per_update: u32 = @intFromFloat(samples_per_second_float / game_update_hz);
-    const total_samples = expected_frames_per_update * channels;
-    const temp_buffer_size_in_bytes: usize = total_samples * @sizeOf(i16);
+    var expected_frames_per_update: u32 = @intFromFloat(samples_per_second_float / game_update_hz);
+    var total_samples = expected_frames_per_update * channels;
+
+    const min_game_update_hz: f32 = 14.0;
+    const max_expected_frames: u32 = @intFromFloat(samples_per_second_float / min_game_update_hz);
+    const max_total_samples = max_expected_frames * channels;
+    const temp_buffer_size_in_bytes: usize = max_total_samples * @sizeOf(i16);
 
     const temp_buffer_memory = try std.posix.mmap(
         null,
@@ -1024,6 +1097,9 @@ pub fn run() !void {
     }
 
     defer {
+        for (0..context.output_count) |i| {
+            if (context.outputs[i].output) |output| output.release();
+        }
         if (context.xkb_state) |kb_state| c.xkb_state_unref(kb_state);
         if (context.xkb_keymap) |km| c.xkb_keymap_unref(km);
         if (context.xkb_context) |ctx| c.xkb_context_unref(ctx);
@@ -1038,6 +1114,8 @@ pub fn run() !void {
     var new_input: *handmade.GameInput = &input[0];
     var old_input: *handmade.GameInput = &input[1];
 
+    var last_counter = try linuxGetWallClock();
+    var last_cycle_count: i64 = @intCast(rdtsc());
     var flip_wall_clock = try linuxGetWallClock();
 
     try wlCreateBuffer(&global_back_buffer, shm, context.width, context.height);
@@ -1054,14 +1132,21 @@ pub fn run() !void {
 
     var game: LinuxGameCode = linuxLoadGameCode(&source_game_code_so_full_path, &temp_game_code_so_full_path);
     while (context.running) {
+        if (context.refresh_rate != current_refresh_rate) {
+            current_refresh_rate = context.refresh_rate;
+            monitor_refresh_hz = @as(f32, @floatFromInt(context.refresh_rate)) / 1000.0;
+            game_update_hz = monitor_refresh_hz / 2.0;
+            target_seconds_per_frame = 1.0 / game_update_hz;
+
+            expected_frames_per_update = @intFromFloat(samples_per_second_float / game_update_hz);
+            total_samples = expected_frames_per_update * channels;
+        }
+
         const new_so_write_time = linuxGetLastWriteTime(&source_game_code_so_full_path);
         if (new_so_write_time > game.so_last_write_time) {
             linuxUnloadGameCode(&game);
             game = linuxLoadGameCode(&source_game_code_so_full_path, &temp_game_code_so_full_path);
         }
-
-        const frame_start = try linuxGetWallClock();
-        const frame_start_cycles: i64 = @intCast(rdtsc());
 
         if (global_back_buffer.width != context.width or global_back_buffer.height != context.height) {
             global_back_buffer.buffer.?.destroy();
@@ -1151,11 +1236,6 @@ pub fn run() !void {
                 };
 
                 if (game.updateAndRender) |updateAndRender| updateAndRender(&thread, &game_memory, new_input, &buffer);
-                // handmade.gameUpdateAndRender(&thread, &game_memory, new_input, &buffer);
-
-                const audio_wall_clock = try linuxGetWallClock();
-                const from_begin_to_audio_seconds: f32 = linuxGetSecondsElapsed(flip_wall_clock, audio_wall_clock);
-                _ = from_begin_to_audio_seconds;
 
                 const write_cursor = audio_state.write_cursor.load(.acquire);
                 const read_cursor = audio_state.read_cursor.load(.acquire);
@@ -1165,7 +1245,8 @@ pub fn run() !void {
                 else
                     (audio_state.ring_buffer_size - read_cursor) + write_cursor;
 
-                const target_frames_ahead: u32 = 4;
+                const target_latency_seconds: f32 = 0.08;
+                const target_frames_ahead: u32 = @intFromFloat(target_latency_seconds * game_update_hz);
                 const samples_per_frame: u32 = @intFromFloat((samples_per_second_float / game_update_hz) * channels_float);
                 const target_buffered_samples = samples_per_frame * target_frames_ahead;
 
@@ -1183,7 +1264,6 @@ pub fn run() !void {
                         };
 
                         if (game.getSoundSamples) |getSoundSamples| getSoundSamples(&thread, &game_memory, &sound_buffer);
-                        // handmade.getSoundSamples(&thread, &game_memory, &sound_buffer);
 
                         for (0..total_samples) |i| {
                             const buffer_index = (write_cursor + @as(u32, @intCast(i))) % audio_state.ring_buffer_size;
@@ -1215,6 +1295,27 @@ pub fn run() !void {
                     }
                 }
 
+                const work_counter = try linuxGetWallClock();
+                const work_seconds_elapsed = linuxGetSecondsElapsed(last_counter, work_counter);
+                var seconds_elapsed_for_frame = work_seconds_elapsed;
+                const safety_margin_seconds: f32 = 0.003;
+                const target_sleep_seconds = target_seconds_per_frame - safety_margin_seconds;
+
+                if (seconds_elapsed_for_frame < target_sleep_seconds) {
+                    const sleep_ns: u64 = @intFromFloat(1_000_000_000.0 * (target_sleep_seconds - seconds_elapsed_for_frame));
+
+                    if (sleep_ns > 1_000_000) {
+                        std.Thread.sleep(sleep_ns);
+                    }
+
+                    while (seconds_elapsed_for_frame < target_sleep_seconds) {
+                        try std.Thread.yield();
+                        seconds_elapsed_for_frame = linuxGetSecondsElapsed(last_counter, try linuxGetWallClock());
+                    }
+                } else {
+                    std.debug.print("Missed frame rate.\n", .{});
+                }
+
                 if (context.frame_callback) |cb| {
                     cb.destroy();
                 }
@@ -1242,11 +1343,13 @@ pub fn run() !void {
                 }
             }
 
-            const frame_end = try linuxGetWallClock();
-            const frame_end_cycles: i64 = @intCast(rdtsc());
+            const end_counter = try linuxGetWallClock();
+            const ms_per_frame: f32 = 1000.0 * linuxGetSecondsElapsed(last_counter, end_counter);
+            last_counter = end_counter;
 
-            const ms_per_frame: f32 = 1000.0 * linuxGetSecondsElapsed(frame_start, frame_end);
-            const cycles_elapsed: i64 = frame_end_cycles - frame_start_cycles;
+            const end_cycle_count: i64 = @intCast(rdtsc());
+            const cycles_elapsed: i64 = end_cycle_count - last_cycle_count;
+            last_cycle_count = end_cycle_count;
 
             const frames_per_second: f32 = 1000.0 / ms_per_frame;
             const mega_cycles_per_frame: f32 = @as(f32, @floatFromInt(cycles_elapsed)) / (1000.0 * 1000.0);
