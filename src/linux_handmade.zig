@@ -225,9 +225,9 @@ const LinuxAudioState = struct {
 };
 
 const LinuxReplayBuffer = struct {
-    file_handle: ?*anyopaque,
+    file_handle: std.posix.fd_t,
     memory_map: ?*anyopaque,
-    file_name: [260:0]u8,
+    file_name: [std.posix.PATH_MAX:0]u8,
     memory_block: ?*anyopaque,
 };
 
@@ -236,13 +236,13 @@ const LinuxState = struct {
     total_size: usize,
     replay_buffers: [4]LinuxReplayBuffer,
 
-    recording_handle: ?*anyopaque,
+    recording_handle: ?std.posix.fd_t,
     input_recording_index: u32,
 
-    playback_handle: ?*anyopaque,
+    playback_handle: ?std.posix.fd_t,
     input_playing_index: u32,
 
-    exe_file_path: [260:0]u8,
+    exe_file_path: [std.posix.PATH_MAX:0]u8,
     one_past_last_exe_file_name_slash: ?[*:0]u8,
 };
 
@@ -306,6 +306,8 @@ const WlContext = struct {
     mouse: ?*wl.Pointer,
     frame_callback: ?*wl.Callback = null,
     waiting_for_frame: bool,
+
+    state: ?*LinuxState,
 
     xkb_context: ?*c.struct_xkb_context,
     xkb_keymap: ?*c.struct_xkb_keymap,
@@ -472,6 +474,90 @@ fn linuxGetEXEFileName(state: *LinuxState) void {
     for (0..path.len) |i| {
         if (scan[i] == '/') {
             state.one_past_last_exe_file_name_slash = scan + i + 1;
+        }
+    }
+}
+
+fn linuxGetInputFileLocation(state: *LinuxState, input_stream: bool, slot_index: usize, dest_count: usize, dest: [*:0]u8) !void {
+    var temp: [64:0]u8 = undefined;
+    const result = try std.fmt.bufPrintZ(&temp, "loop_edit_{d}_{s}.hmi", .{ slot_index, if (input_stream) "input" else "state" });
+    linuxBuildEXEPathFileName(state, result, dest_count, dest);
+}
+
+fn linuxEndInputPlayBack(state: *LinuxState) void {
+    if (state.playback_handle) |playback_handle| {
+        std.posix.close(playback_handle);
+    }
+    state.input_playing_index = 0;
+}
+
+fn linuxBeginInputPlayBack(state: *LinuxState, input_playing_index: u32) !void {
+    const replay_buffer: *LinuxReplayBuffer = linuxGetReplayBuffer(state, input_playing_index);
+    if (replay_buffer.memory_block) |memory_block| {
+        state.input_playing_index = input_playing_index;
+
+        var file_name: [std.posix.PATH_MAX:0]u8 = undefined;
+        try linuxGetInputFileLocation(state, true, input_playing_index, @sizeOf(@TypeOf(file_name)), &file_name);
+        state.playback_handle = try std.posix.openZ(&file_name, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0);
+
+        const dest = @as([*]u8, @ptrCast(state.game_memory_block))[0..state.total_size];
+        const source = @as([*]u8, @ptrCast(memory_block))[0..state.total_size];
+        @memcpy(dest, source);
+    }
+}
+
+fn linuxEndRecordingInput(state: *LinuxState) void {
+    if (state.recording_handle) |recording_handle| {
+        std.posix.close(recording_handle);
+    }
+    state.input_recording_index = 0;
+}
+
+fn linuxGetReplayBuffer(state: *LinuxState, index: u32) *LinuxReplayBuffer {
+    std.debug.assert(index < state.replay_buffers.len);
+    const result: *LinuxReplayBuffer = &state.replay_buffers[index];
+    return result;
+}
+
+fn linuxBeginRecordingInput(state: *LinuxState, input_recording_index: u32) !void {
+    const replay_buffer: *LinuxReplayBuffer = linuxGetReplayBuffer(state, input_recording_index);
+    if (replay_buffer.memory_block) |memory_block| {
+        state.input_recording_index = input_recording_index;
+
+        var file_name: [std.posix.PATH_MAX:0]u8 = undefined;
+        try linuxGetInputFileLocation(state, true, input_recording_index, @sizeOf(@TypeOf(file_name)), &file_name);
+        state.recording_handle = try std.posix.openZ(&file_name, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+
+        const dest = @as([*]u8, @ptrCast(memory_block))[0..state.total_size];
+        const source = @as([*]u8, @ptrCast(state.game_memory_block))[0..state.total_size];
+        @memcpy(dest, source);
+    }
+}
+
+fn linuxRecordInput(state: *LinuxState, new_input: *handmade.GameInput) void {
+    const input_bytes = std.mem.asBytes(new_input);
+
+    if (state.recording_handle) |recording_handle| {
+        _ = std.posix.write(recording_handle, input_bytes) catch |err| {
+            std.debug.print("Failed to write file: {}.\n", .{err});
+            return;
+        };
+    }
+}
+
+fn linuxPlayBackInput(state: *LinuxState, new_input: *handmade.GameInput) !void {
+    const buffer = std.mem.asBytes(new_input);
+
+    if (state.playback_handle) |playback_handle| {
+        const bytes_read = std.posix.read(playback_handle, buffer) catch |err| {
+            std.debug.print("Failed to read file: {}.\n", .{err});
+            return;
+        };
+
+        if (bytes_read == 0) {
+            const playing_index = state.input_playing_index;
+            linuxEndInputPlayBack(state);
+            try linuxBeginInputPlayBack(state, playing_index);
         }
     }
 }
@@ -667,6 +753,27 @@ fn linuxProcessKeySym(keyboard_controller: *handmade.GameControllerInput, key_sy
         c.XKB_KEY_p, c.XKB_KEY_P => {
             if (debug_mode) {
                 if (is_down) global_pause = !global_pause;
+            }
+        },
+
+        c.XKB_KEY_l, c.XKB_KEY_L => {
+            if (is_down) {
+                if (context.state) |state| {
+                    if (state.input_playing_index == 0) {
+                        if (state.input_recording_index == 0) {
+                            linuxBeginRecordingInput(state, 1) catch |err| {
+                                std.debug.print("Failed to begin recording: {}.\n", .{err});
+                            };
+                        } else {
+                            linuxEndRecordingInput(state);
+                            linuxBeginInputPlayBack(state, 1) catch |err| {
+                                std.debug.print("Failed to begin playback: {}.\n", .{err});
+                            };
+                        }
+                    } else {
+                        linuxEndInputPlayBack(state);
+                    }
+                }
             }
         },
 
@@ -961,10 +1068,10 @@ pub fn run() !void {
     var state = std.mem.zeroes(LinuxState);
 
     linuxGetEXEFileName(&state);
-    var source_game_code_so_full_path: [260:0]u8 = undefined;
+    var source_game_code_so_full_path: [std.posix.PATH_MAX:0]u8 = undefined;
     linuxBuildEXEPathFileName(&state, "libhandmade_hero.so", @sizeOf(@TypeOf(source_game_code_so_full_path)), &source_game_code_so_full_path);
 
-    var temp_game_code_so_full_path: [260:0]u8 = undefined;
+    var temp_game_code_so_full_path: [std.posix.PATH_MAX:0]u8 = undefined;
     linuxBuildEXEPathFileName(&state, "libhandmade_temp.so", @sizeOf(@TypeOf(temp_game_code_so_full_path)), &temp_game_code_so_full_path);
 
     const display = try wl.Display.connect(null);
@@ -974,6 +1081,8 @@ pub fn run() !void {
     defer registry.destroy();
 
     var context = std.mem.zeroInit(WlContext, .{});
+
+    context.state = &state;
 
     registry.setListener(*WlContext, wlRegistryListener, &context);
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
@@ -1114,6 +1223,36 @@ pub fn run() !void {
     game_memory.permanent_storage = state.game_memory_block;
     game_memory.transient_storage = @as([*]u8, @ptrCast(game_memory.permanent_storage)) + game_memory.permanent_storage_size;
 
+    for (0..state.replay_buffers.len) |replay_index| {
+        const replay_buffer: *LinuxReplayBuffer = &state.replay_buffers[replay_index];
+
+        try linuxGetInputFileLocation(&state, false, replay_index, @sizeOf(@TypeOf(replay_buffer.file_name)), &replay_buffer.file_name);
+        replay_buffer.file_handle = try std.posix.openZ(&replay_buffer.file_name, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, 0o644);
+        errdefer std.posix.close(replay_buffer.file_handle);
+
+        try std.posix.ftruncate(replay_buffer.file_handle, state.total_size);
+        const replay_slice = std.posix.mmap(
+            null,
+            state.total_size,
+            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            .{ .TYPE = .SHARED },
+            replay_buffer.file_handle,
+            0,
+        ) catch |err| {
+            std.debug.print("Failed to map memory: {}.\n", .{err});
+            continue;
+        };
+
+        replay_buffer.memory_block = replay_slice.ptr;
+
+        if (replay_buffer.memory_block != null) {
+            // got memory
+        } else {
+
+            // TODO: Logging
+        }
+    }
+
     context.xkb_context = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS);
     if (context.xkb_context == null) {
         std.debug.print("Failed to create XKB context.\n", .{});
@@ -1140,7 +1279,6 @@ pub fn run() !void {
 
     var last_counter = try linuxGetWallClock();
     var last_cycle_count: i64 = @intCast(rdtsc());
-    var flip_wall_clock = try linuxGetWallClock();
 
     try wlResizeBuffer(&global_back_buffer, shm, context.width, context.height);
 
@@ -1256,6 +1394,13 @@ pub fn run() !void {
                     .bytes_per_pixel = 4,
                 };
 
+                if (state.input_recording_index != 0) {
+                    linuxRecordInput(&state, new_input);
+                }
+                if (state.input_playing_index != 0) {
+                    try linuxPlayBackInput(&state, new_input);
+                }
+
                 if (game.updateAndRender) |updateAndRender| updateAndRender(&thread, &game_memory, new_input, &buffer);
 
                 const write_cursor = audio_state.write_cursor.load(.acquire);
@@ -1344,8 +1489,6 @@ pub fn run() !void {
                 context.frame_callback = try surface.frame();
                 context.frame_callback.?.setListener(*WlContext, wlFrameListener, &context);
                 context.waiting_for_frame = true;
-
-                flip_wall_clock = try linuxGetWallClock();
 
                 surface.attach(global_back_buffer.buffer, 0, 0);
                 surface.damage(0, 0, context.width, context.height);

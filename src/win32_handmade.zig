@@ -238,11 +238,13 @@ fn win32EndInputPlayBack(state: *Win32State) void {
     if (state.playback_handle) |playback_handle| {
         zig32.zig.closeHandle(playback_handle);
     }
+
     state.input_playing_index = 0;
 }
 
 fn win32BeginInputPlayBack(state: *Win32State, input_playing_index: u32) !void {
     const replay_buffer: *Win32ReplayBuffer = win32GetReplayBuffer(state, input_playing_index);
+
     if (replay_buffer.memory_block) |memory_block| {
         state.input_playing_index = input_playing_index;
 
@@ -250,10 +252,9 @@ fn win32BeginInputPlayBack(state: *Win32State, input_playing_index: u32) !void {
         try win32GetInputFileLocation(state, true, input_playing_index, @sizeOf(@TypeOf(file_name)), &file_name);
         state.playback_handle = fs.CreateFileA(&file_name, fs.FILE_GENERIC_READ, fs.FILE_SHARE_NONE, null, fs.OPEN_EXISTING, fs.FILE_ATTRIBUTE_NORMAL, null);
 
-        // var file_position: foundation.LARGE_INTEGER = undefined;
-        // file_position.QuadPart = @intCast(state.total_size);
-        // _ = fs.SetFilePointerEx(state.playback_handle, file_position, null, fs.FILE_BEGIN);
-        @memcpy(@as([*]u8, @ptrCast(state.game_memory_block))[0..state.total_size], @as([*]u8, @ptrCast(memory_block))[0..state.total_size]);
+        const dest = @as([*]u8, @ptrCast(state.game_memory_block))[0..state.total_size];
+        const source = @as([*]u8, @ptrCast(memory_block))[0..state.total_size];
+        @memcpy(dest, source);
     }
 }
 
@@ -279,10 +280,9 @@ fn win32BeginRecordingInput(state: *Win32State, input_recording_index: u32) !voi
         try win32GetInputFileLocation(state, true, input_recording_index, @sizeOf(@TypeOf(file_name)), &file_name);
         state.recording_handle = fs.CreateFileA(&file_name, fs.FILE_GENERIC_WRITE, fs.FILE_SHARE_NONE, null, fs.CREATE_ALWAYS, fs.FILE_ATTRIBUTE_NORMAL, null);
 
-        // var file_position: foundation.LARGE_INTEGER = undefined;
-        // file_position.QuadPart = @intCast(state.total_size);
-        // _ = fs.SetFilePointerEx(state.recording_handle, file_position, null, fs.FILE_BEGIN);
-        @memcpy(@as([*]u8, @ptrCast(memory_block))[0..state.total_size], @as([*]u8, @ptrCast(state.game_memory_block))[0..state.total_size]);
+        const dest = @as([*]u8, @ptrCast(memory_block))[0..state.total_size];
+        const source = @as([*]u8, @ptrCast(state.game_memory_block))[0..state.total_size];
+        @memcpy(dest, source);
     }
 }
 
