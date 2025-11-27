@@ -744,11 +744,11 @@ pub fn run() !void {
         if (window_handle) |window| {
             const device_context = gdi.GetDC(window);
 
-            const monitor_refresh_hz: f32 = 60.0;
-            // const win32_refresh_rate: f32 = @floatFromInt(gdi.GetDeviceCaps(device_context, gdi.VREFRESH));
-            // if (win32_refresh_rate > 1) {
-            //     monitor_refresh_hz = win32_refresh_rate;
-            // }
+            var monitor_refresh_hz: f32 = 60.0;
+            const win32_refresh_rate: f32 = @floatFromInt(gdi.GetDeviceCaps(device_context, gdi.VREFRESH));
+            if (win32_refresh_rate > 1) {
+                monitor_refresh_hz = win32_refresh_rate;
+            }
 
             const game_update_hz: f32 = monitor_refresh_hz / 2.0;
             const target_seconds_per_frame: f32 = 1.0 / game_update_hz;
@@ -758,7 +758,8 @@ pub fn run() !void {
                 .bytes_per_sample = @sizeOf(i16) * 2,
             });
             sound_output.secondary_buffer_size = sound_output.samples_per_second * sound_output.bytes_per_sample;
-            sound_output.safety_bytes = @intFromFloat(((@as(f32, @floatFromInt(sound_output.samples_per_second)) * @as(f32, @floatFromInt(sound_output.bytes_per_sample))) / game_update_hz) / 3.0);
+            const safety_seconds: f32 = 0.025;
+            sound_output.safety_bytes = @intFromFloat(((@as(f32, @floatFromInt(sound_output.samples_per_second)) * @as(f32, @floatFromInt(sound_output.bytes_per_sample))) / game_update_hz) / safety_seconds);
 
             win32InitDSound(window, sound_output.samples_per_second, sound_output.secondary_buffer_size);
             win32ClearBuffer(&sound_output);
@@ -822,7 +823,6 @@ pub fn run() !void {
                 var sound_is_valid = false;
 
                 var last_cycle_count: i64 = @intCast(rdtsc());
-                var audio_fractional_bytes: f32 = 0.0;
 
                 var game: Win32GameCode = win32LoadGameCode(&source_game_code_dll_full_path, &temp_game_code_dll_full_path);
                 global_running = true;
@@ -1064,15 +1064,13 @@ pub fn run() !void {
 
                             const byte_to_lock: win.DWORD = (sound_output.running_sample_index * sound_output.bytes_per_sample) % sound_output.secondary_buffer_size;
 
-                            const expected_sound_bytes_per_frame_real: f32 = (@as(f32, @floatFromInt(sound_output.samples_per_second)) * @as(f32, @floatFromInt(sound_output.bytes_per_sample))) / game_update_hz;
+                            // const expected_sound_bytes_per_frame_real: f32 = (@as(f32, @floatFromInt(sound_output.samples_per_second)) * @as(f32, @floatFromInt(sound_output.bytes_per_sample))) / game_update_hz;
 
-                            audio_fractional_bytes += expected_sound_bytes_per_frame_real;
-                            const expected_sound_bytes_per_frame: u32 = @intFromFloat(audio_fractional_bytes);
-                            audio_fractional_bytes -= @as(f32, @floatFromInt(expected_sound_bytes_per_frame));
+                            const expected_sound_bytes_per_frame: u32 = @intFromFloat(@as(f32, @floatFromInt(sound_output.samples_per_second * sound_output.bytes_per_sample)) / game_update_hz);
                             const seconds_left_until_flip = target_seconds_per_frame - from_begin_to_audio_seconds;
                             var expected_bytes_until_flip: u32 = 0;
                             if (seconds_left_until_flip > 0) {
-                                expected_bytes_until_flip = @as(u32, @intFromFloat((seconds_left_until_flip / target_seconds_per_frame) * @as(f32, @floatFromInt(expected_sound_bytes_per_frame))));
+                                expected_bytes_until_flip = @intFromFloat((seconds_left_until_flip / target_seconds_per_frame) * @as(f32, @floatFromInt(expected_sound_bytes_per_frame)));
                             } else {
                                 expected_bytes_until_flip = 0;
                             }
