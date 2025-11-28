@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const platform =
+pub const platform =
     // Linux
     if (builtin.os.tag == .linux) @import("linux_handmade.zig")
     // Windows

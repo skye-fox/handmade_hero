@@ -1,15 +1,9 @@
 const std = @import("std");
-const debug = @import("builtin").mode == @import("std").builtin.OptimizeMode.Debug;
 
 const builtin = @import("builtin");
+const debug = builtin.mode == @import("std").builtin.OptimizeMode.Debug;
 
-const platform =
-    // Windows
-    if (builtin.os.tag == .windows) @import("win32_handmade.zig")
-    // Linux
-    else if (builtin.os.tag == .linux) @import("linux_handmade.zig")
-    // Unsupported
-    else @compileError("Unsupported OS: " ++ @tagName(builtin.os.tag));
+const platform = @import("main.zig").platform;
 
 pub const GameMemory = struct {
     is_initialized: bool,
@@ -28,14 +22,8 @@ pub const ThreadContext = struct {
 };
 
 const GameState = struct {
-    tone_hz: i32,
-    blue_offset: i32,
-    green_offset: i32,
-    t_sine: f32,
-
-    player_x: i32,
-    player_y: i32,
-    t_jump: f32,
+    player_x: f32,
+    player_y: f32,
 };
 
 pub const GameButtonState = extern struct {
@@ -83,6 +71,7 @@ pub const GameInput = struct {
     mouse_x: i32,
     mouse_y: i32,
     mouse_z: i32,
+    dt_for_frame: f32,
     controllers: [5]GameControllerInput,
 };
 
@@ -133,8 +122,10 @@ pub inline fn getController(input: *GameInput, controller_index: usize) *GameCon
 
 pub export fn getSoundSamples(thread: *ThreadContext, memory: *GameMemory, sound_buffer: *GameSoundOutputBuffer) void {
     _ = thread;
+    _ = sound_buffer;
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
-    gameOutputSound(sound_buffer, game_state);
+    _ = game_state;
+    // gameOutputSound(sound_buffer, game_state);
 }
 
 fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, game_state: *GameState) void {
@@ -159,82 +150,74 @@ fn gameOutputSound(sound_buffer: *GameSoundOutputBuffer, game_state: *GameState)
     }
 }
 
-fn renderPlayer(buffer: *GameOffScreenBuffer, player_x: i32, player_y: i32) void {
-    const end_of_buffer = @intFromPtr(buffer.memory.ptr) + buffer.pitch * @as(usize, @intCast(buffer.height));
-    const color: u32 = 0xFFFFFFFF;
+fn drawRectangle(buffer: *GameOffScreenBuffer, real_min_x: f32, real_min_y: f32, real_max_x: f32, real_max_y: f32, red: f32, green: f32, blue: f32) void {
+    var min_x: i32 = @intFromFloat(@round(real_min_x));
+    var min_y: i32 = @intFromFloat(@round(real_min_y));
+    var max_x: i32 = @intFromFloat(@round(real_max_x));
+    var max_y: i32 = @intFromFloat(@round(real_max_y));
 
-    const left = @max(player_x, 0);
-    const right = @min(player_x + 20, buffer.width);
-    const top = @max(player_y, 0);
-    const bottom = @min(player_y + 20, buffer.height);
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
 
-    var x = left;
-    while (x < right) : (x += 1) {
-        var pixel_ptr = @intFromPtr(buffer.memory.ptr) + @as(usize, @intCast(x)) * @as(usize, @intCast(buffer.bytes_per_pixel)) + @as(usize, @intCast(top)) * buffer.pitch;
+    if (max_x > buffer.width) max_x = buffer.width;
+    if (max_y > buffer.height) max_y = buffer.height;
 
-        var y: i32 = top;
-        while (y < bottom) : (y += 1) {
-            const pixel_addr = @intFromPtr(buffer.memory.ptr);
+    const color = Color{
+        .blue = @intFromFloat(@round(blue * 255.0)),
+        .green = @intFromFloat(@round(green * 255.0)),
+        .red = @intFromFloat(@round(red * 255.0)),
+    };
 
-            if (pixel_ptr >= pixel_addr and (pixel_ptr + 4) < end_of_buffer) {
-                const pixel: *u32 = @ptrFromInt(pixel_ptr);
-                pixel.* = color;
-            }
+    var row_ptr = @intFromPtr(buffer.memory.ptr) + @as(usize, @intCast(min_x)) * @as(usize, @intCast(buffer.bytes_per_pixel)) + @as(usize, @intCast(min_y)) * buffer.pitch;
 
-            pixel_ptr += buffer.pitch;
+    var y = min_y;
+    while (y < max_y) : (y += 1) {
+        var x: i32 = min_x;
+        var pixel: [*]Color = @ptrFromInt(row_ptr);
+        while (x < max_x) : (x += 1) {
+            pixel[0] = color;
+            pixel += 1;
         }
+        row_ptr += buffer.pitch;
     }
 }
 
 fn gameRender(buffer: *GameOffScreenBuffer, blue_offset: i32, green_offset: i32) void {
-    var row = @as([*]u8, @ptrCast(buffer.memory));
-
-    var y: i32 = 0;
-    while (y < buffer.height) : (y += 1) {
-        var pixel: [*]Color = @ptrCast(@alignCast(row));
-        var x: i32 = 0;
-        while (x < buffer.width) : (x += 1) {
-            const blue: u8 = @truncate(@abs(x +% blue_offset));
-            const green: u8 = @truncate(@abs(y +% green_offset));
-            // const red: u8 = @truncate(@abs(x +% y));
-            pixel[0] = .{ .blue = blue, .green = 0, .red = green };
-            pixel += 1;
-        }
-        row += buffer.pitch;
-    }
+    _ = blue_offset;
+    _ = green_offset;
+    // var row = @as([*]u8, @ptrCast(buffer.memory));
+    //
+    // var y: i32 = 0;
+    // while (y < buffer.height) : (y += 1) {
+    //     var pixel: [*]Color = @ptrCast(@alignCast(row));
+    //     var x: i32 = 0;
+    //     while (x < buffer.width) : (x += 1) {
+    //         const blue: u8 = @truncate(@abs(x +% blue_offset));
+    //         const green: u8 = @truncate(@abs(y +% green_offset));
+    //         // const red: u8 = @truncate(@abs(x +% y));
+    //         pixel[0] = .{ .blue = blue, .green = 0, .red = green };
+    //         pixel += 1;
+    //     }
+    //     row += buffer.pitch;
+    // }
 
     //     Make a solid bg color
     //
-    //     var pixel: [*]Color = buffer.memory;
-    // const width: u32 = @intCast(buffer.width);
-    // const height: u32 = @intCast(buffer.height);
-    // var pixel: [*]Color = @ptrCast(@alignCast(buffer.memory));
-    // for (0..width * height) |i| {
-    //     pixel[i] = .{ .blue = 246, .green = 92, .red = 139 };
-    // }
+    const width: u32 = @intCast(buffer.width);
+    const height: u32 = @intCast(buffer.height);
+    var pixel: [*]Color = @ptrCast(@alignCast(buffer.memory));
+    for (0..width * height) |i| {
+        pixel[i] = .{ .blue = 0, .green = 0, .red = 0 };
+    }
 }
 
-pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, input: *GameInput, video_buffer: *GameOffScreenBuffer) void {
+pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, input: *GameInput, buffer: *GameOffScreenBuffer) void {
+    _ = thread;
     std.debug.assert((&input.controllers[0].button.input.terminator - &input.controllers[0].button.buttons[0]) == input.controllers[0].button.buttons.len);
     std.debug.assert(@sizeOf(GameState) <= memory.permanent_storage_size);
 
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
     if (!memory.is_initialized) {
-        game_state.tone_hz = 256;
-        game_state.blue_offset = 0;
-        game_state.green_offset = 0;
-        game_state.t_sine = 0.0;
-        game_state.player_x = 100;
-        game_state.player_y = 100;
-
-        if (debug) {
-            const file_path = "src/handmade.zig";
-            const file: platform.DEBUGReadFileResult = memory.debugPlatformReadEntireFile(thread, file_path);
-            if (file.content) |content| {
-                _ = memory.debugPlatformWriteEntireFile(thread, "test.txt", file.content_size, content);
-                memory.debugPlatformFreeFileMemory(thread, file);
-            }
-        }
         memory.is_initialized = true;
     }
 
@@ -242,49 +225,76 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
         const controller: *GameControllerInput = getController(input, controller_index);
         if (controller.is_analog) {
             // NOTE: Analog
-            game_state.tone_hz = 256 + @as(i32, @intFromFloat(128.0 * controller.right_stick_average_x));
-            // game_state.blue_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_x));
-            // game_state.green_offset += @as(i32, @intFromFloat(4.0 * controller.left_stick_average_y));
-            game_state.player_x += @as(i32, @intFromFloat(12.0 * controller.left_stick_average_x));
-            game_state.player_y -= @as(i32, @intFromFloat(12.0 * controller.left_stick_average_y));
         } else {
             // NOTE: Digital
+            var delta_player_x: f32 = 0.0;
+            var delta_player_y: f32 = 0.0;
             if (controller.button.input.move_up.ended_down) {
-                game_state.green_offset += 1;
+                delta_player_y = -1.0;
             }
-
-            if (controller.button.input.move_left.ended_down) {
-                game_state.blue_offset += 1;
-            }
-
             if (controller.button.input.move_down.ended_down) {
-                game_state.green_offset -= 1;
+                delta_player_y = 1.0;
             }
-
+            if (controller.button.input.move_left.ended_down) {
+                delta_player_x = -1.0;
+            }
             if (controller.button.input.move_right.ended_down) {
-                game_state.blue_offset -= 1;
+                delta_player_x = 1.0;
             }
+
+            delta_player_x *= 128.0;
+            delta_player_y *= 128.0;
+
+            game_state.player_x += input.dt_for_frame * delta_player_x;
+            game_state.player_y += input.dt_for_frame * delta_player_y;
         }
-        if (game_state.t_jump > 0) {
-            game_state.player_y += @as(i32, @intFromFloat(10.0 * @sin(std.math.pi * game_state.t_jump)));
-        }
-        if (controller.button.input.action_down.ended_down) {
-            game_state.t_jump = 2.0;
-        }
-        game_state.t_jump -= 0.029;
     }
 
-    gameRender(video_buffer, game_state.blue_offset, game_state.green_offset);
-    renderPlayer(video_buffer, game_state.player_x, game_state.player_y);
+    const rows: u32 = 9;
+    const columns: u32 = 17;
+    const tile_map: [rows][columns]u8 = .{
+        .{ 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1 },
+        .{ 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1 },
+        .{ 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1 },
+        .{ 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1 },
+        .{ 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+        .{ 1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1 },
+        .{ 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+        .{ 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1 },
+        .{ 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1 },
+    };
 
-    // mouse
-    renderPlayer(video_buffer, input.mouse_x, input.mouse_y);
+    const upper_left_x: f32 = 0.0;
+    const upper_left_y: f32 = 0.0;
+    const tile_width: f32 = 60.0;
+    const tile_height: f32 = 60.0;
 
-    for (0..input.mouse_buttons.len) |button_index| {
-        if (input.mouse_buttons[button_index].ended_down) {
-            renderPlayer(video_buffer, @as(i32, @intCast(10 + 40 * button_index)), 10);
+    drawRectangle(buffer, 0.0, 0.0, @floatFromInt(buffer.width), @floatFromInt(buffer.height), 1.0, 0.0, 1.0);
+
+    for (0..rows) |row| {
+        for (0..columns) |column| {
+            const tile_id = tile_map[row][column];
+            var gray: f32 = 0.5;
+            if (tile_id == 1) {
+                gray = 1.0;
+            }
+
+            const min_x = upper_left_x + @as(f32, @floatFromInt(column)) * tile_width;
+            const min_y = upper_left_y + @as(f32, @floatFromInt(row)) * tile_height;
+            const max_x = min_x + tile_width;
+            const max_y = min_y + tile_height;
+            drawRectangle(buffer, min_x, min_y, max_x, max_y, gray, gray, gray);
         }
     }
+
+    const player_r: f32 = 1.0;
+    const player_g: f32 = 1.0;
+    const player_b: f32 = 0.0;
+    const player_width = 0.75 * tile_width;
+    const player_height = tile_height;
+    const player_left = game_state.player_x - 0.5 * player_width;
+    const player_top = game_state.player_y - player_height;
+    drawRectangle(buffer, player_left, player_top, player_left + player_width, player_top + player_height, player_r, player_g, player_b);
 }
 
 pub const UpdateAndRenderFnPtr = *const fn (*ThreadContext, *GameMemory, *GameInput, *GameOffScreenBuffer) callconv(.c) void;

@@ -827,6 +827,8 @@ pub fn run() !void {
                 var game: Win32GameCode = win32LoadGameCode(&source_game_code_dll_full_path, &temp_game_code_dll_full_path);
                 global_running = true;
                 while (global_running) {
+                    new_input.dt_for_frame = target_seconds_per_frame;
+
                     const new_dll_write_time: foundation.FILETIME = win32GetLastWriteTime(&source_game_code_dll_full_path);
                     if (fs.CompareFileTime(&new_dll_write_time, &game.dll_last_write_time) != 0) {
                         win32UnloadGameCode(&game);

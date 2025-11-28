@@ -1276,6 +1276,7 @@ pub fn run() !void {
     var input = [_]handmade.GameInput{std.mem.zeroInit(handmade.GameInput, .{})} ** 2;
     var new_input: *handmade.GameInput = &input[0];
     var old_input: *handmade.GameInput = &input[1];
+    new_input.dt_for_frame = target_seconds_per_frame;
 
     var last_counter = try linuxGetWallClock();
     var last_cycle_count: i64 = @intCast(rdtsc());
@@ -1298,6 +1299,7 @@ pub fn run() !void {
             monitor_refresh_hz = @as(f32, @floatFromInt(context.refresh_rate)) / 1000.0;
             game_update_hz = monitor_refresh_hz / 2.0;
             target_seconds_per_frame = 1.0 / game_update_hz;
+            new_input.dt_for_frame = target_seconds_per_frame;
 
             expected_frames_per_update = @intFromFloat(samples_per_second_float / game_update_hz);
             total_samples = expected_frames_per_update * channels;
