@@ -16,22 +16,16 @@ const CanonicalPosition = struct {
     tile_rel_y: f32,
 };
 
-const RawPosition = struct {
-    tile_map_x: i32,
-    tile_map_y: i32,
-
-    x: f32,
-    y: f32,
-};
-
 const World = struct {
+    tile_side_in_meters: f32,
+    tile_side_in_pixels: u32,
+    meters_to_pixels: f32,
+
     count_x: i32,
     count_y: i32,
 
     upper_left_x: f32,
     upper_left_y: f32,
-    tile_width: f32,
-    tile_height: f32,
 
     tile_map_count_x: i32,
     tile_map_count_y: i32,
@@ -60,11 +54,7 @@ pub const ThreadContext = struct {
 };
 
 const GameState = struct {
-    player_tile_map_x: i32,
-    player_tile_map_y: i32,
-
-    player_x: f32,
-    player_y: f32,
+    player_pos: CanonicalPosition,
 };
 
 pub const GameButtonState = extern struct {
@@ -176,52 +166,37 @@ inline fn getTileValueUnchecked(world: *World, tile_map: *TileMap, tile_x: i32, 
     return tile_map_value;
 }
 
-inline fn getCanonicalLocation(world: *World, pos: RawPosition) CanonicalPosition {
-    var result: CanonicalPosition = undefined;
+inline fn recanonicalizeCoord(world: *World, tile_count: i32, tile_map: *i32, tile: *i32, tile_rel: *f32) void {
+    const offset: i32 = @intFromFloat(@floor(tile_rel.* / world.tile_side_in_meters));
+    tile.* += offset;
+    tile_rel.* -= @as(f32, @floatFromInt(offset)) * world.tile_side_in_meters;
 
-    result.tile_map_x = pos.tile_map_x;
-    result.tile_map_y = pos.tile_map_y;
+    std.debug.assert(tile_rel.* >= 0);
+    std.debug.assert(tile_rel.* < world.tile_side_in_meters);
 
-    const x: f32 = pos.x - world.upper_left_x;
-    const y: f32 = pos.y - world.upper_left_y;
-    result.tile_x = @intFromFloat(@floor(x / world.tile_width));
-    result.tile_y = @intFromFloat(@floor(y / world.tile_height));
-
-    result.tile_rel_x = x - @as(f32, @floatFromInt(result.tile_x)) * world.tile_width;
-    result.tile_rel_y = y - @as(f32, @floatFromInt(result.tile_y)) * world.tile_height;
-
-    std.debug.assert(result.tile_rel_x >= 0);
-    std.debug.assert(result.tile_rel_y >= 0);
-    std.debug.assert(result.tile_rel_x < world.tile_width);
-    std.debug.assert(result.tile_rel_y < world.tile_height);
-
-    if (result.tile_x < 0) {
-        result.tile_x = world.count_x + result.tile_x;
-        result.tile_map_x -= 1;
+    if (tile.* < 0) {
+        tile.* = tile_count + tile.*;
+        tile_map.* -= 1;
     }
 
-    if (result.tile_y < 0) {
-        result.tile_y = world.count_y + result.tile_y;
-        result.tile_map_y -= 1;
+    if (tile.* >= tile_count) {
+        tile.* = tile.* - tile_count;
+        tile_map.* += 1;
     }
+}
 
-    if (result.tile_x >= world.count_x) {
-        result.tile_x = result.tile_x - world.count_x;
-        result.tile_map_x += 1;
-    }
+inline fn recanonicalizePosition(world: *World, pos: CanonicalPosition) CanonicalPosition {
+    var result: CanonicalPosition = pos;
 
-    if (result.tile_y >= world.count_y) {
-        result.tile_y = result.tile_y - world.count_y;
-        result.tile_map_y += 1;
-    }
+    recanonicalizeCoord(world, world.count_x, &result.tile_map_x, &result.tile_x, &result.tile_rel_x);
+    recanonicalizeCoord(world, world.count_y, &result.tile_map_y, &result.tile_y, &result.tile_rel_y);
 
     return result;
 }
 
-fn isWorldPointEmpty(world: *World, test_pos: RawPosition) bool {
+fn isWorldPointEmpty(world: *World, can_pos: CanonicalPosition) bool {
     var empty = false;
 
-    const can_pos = getCanonicalLocation(world, test_pos);
     const tile_map = getTileMap(world, can_pos.tile_map_x, can_pos.tile_map_y);
 
     if (tile_map) |t_map| {
@@ -401,28 +376,34 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
     world.tile_map_count_x = 2;
     world.tile_map_count_y = 2;
 
+    world.tile_side_in_meters = 1.4;
+    world.tile_side_in_pixels = 60;
+    world.meters_to_pixels = @as(f32, @floatFromInt(world.tile_side_in_pixels)) / world.tile_side_in_meters;
+
     world.count_x = columns;
     world.count_y = rows;
 
     world.upper_left_x = 10.0;
     world.upper_left_y = 10.0;
-    world.tile_width = 60.0;
-    world.tile_height = 60.0;
 
-    const player_width = 0.75 * world.tile_width;
-    const player_height = world.tile_height;
+    const player_height = 1.4;
+    const player_width = 0.75 * player_height;
 
     world.tile_maps = @ptrCast(&tile_maps);
 
     const game_state: *GameState = @ptrCast(@alignCast(memory.permanent_storage));
     if (!memory.is_initialized) {
-        game_state.player_x = 180.0;
-        game_state.player_y = 150.0;
+        game_state.player_pos.tile_map_x = 0;
+        game_state.player_pos.tile_map_y = 0;
+        game_state.player_pos.tile_x = 3;
+        game_state.player_pos.tile_y = 3;
+        game_state.player_pos.tile_rel_x = 5.0;
+        game_state.player_pos.tile_rel_y = 5.0;
 
         memory.is_initialized = true;
     }
 
-    const tile_map = getTileMap(&world, game_state.player_tile_map_x, game_state.player_tile_map_y);
+    const tile_map = getTileMap(&world, game_state.player_pos.tile_map_x, game_state.player_pos.tile_map_y);
 
     for (0..input.controllers.len) |controller_index| {
         const controller: *GameControllerInput = getController(input, controller_index);
@@ -445,36 +426,28 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
                 delta_player_x = 1.0;
             }
 
-            delta_player_x *= 200.0;
-            delta_player_y *= 200.0;
+            delta_player_x *= 10.0;
+            delta_player_y *= 10.0;
 
-            const new_player_x = game_state.player_x + input.dt_for_frame * delta_player_x;
-            const new_player_y = game_state.player_y + input.dt_for_frame * delta_player_y;
+            var new_player_pos = game_state.player_pos;
+            new_player_pos.tile_rel_x += input.dt_for_frame * delta_player_x;
+            new_player_pos.tile_rel_y += input.dt_for_frame * delta_player_y;
+            new_player_pos = recanonicalizePosition(&world, new_player_pos);
 
-            const player_pos = RawPosition{
-                .tile_map_x = game_state.player_tile_map_x,
-                .tile_map_y = game_state.player_tile_map_y,
-                .x = new_player_x,
-                .y = new_player_y,
-            };
+            var player_left = new_player_pos;
+            player_left.tile_rel_x -= 0.5 * player_width;
+            player_left = recanonicalizePosition(&world, player_left);
 
-            var player_left = player_pos;
-            player_left.x -= 0.5 * player_width;
+            var player_right = new_player_pos;
+            player_right.tile_rel_x += 0.5 * player_width;
+            player_right = recanonicalizePosition(&world, player_right);
 
-            var player_right = player_pos;
-            player_right.x += 0.5 * player_width;
-
-            const point_is_valid = (isWorldPointEmpty(&world, player_pos) and
+            const point_is_valid = (isWorldPointEmpty(&world, new_player_pos) and
                 isWorldPointEmpty(&world, player_left) and
                 isWorldPointEmpty(&world, player_right));
 
             if (point_is_valid) {
-                const can_pos = getCanonicalLocation(&world, player_pos);
-                game_state.player_tile_map_x = can_pos.tile_map_x;
-                game_state.player_tile_map_y = can_pos.tile_map_y;
-
-                game_state.player_x = world.upper_left_x + world.tile_width * @as(f32, @floatFromInt(can_pos.tile_x)) + can_pos.tile_rel_x;
-                game_state.player_y = world.upper_left_y + world.tile_height * @as(f32, @floatFromInt(can_pos.tile_y)) + can_pos.tile_rel_y;
+                game_state.player_pos = new_player_pos;
             }
         }
     }
@@ -490,10 +463,14 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
                     gray = 1.0;
                 }
 
-                const min_x = world.upper_left_x + @as(f32, @floatFromInt(column)) * world.tile_width;
-                const min_y = world.upper_left_y + @as(f32, @floatFromInt(row)) * world.tile_height;
-                const max_x = min_x + world.tile_width;
-                const max_y = min_y + world.tile_height;
+                if (column == game_state.player_pos.tile_x and row == game_state.player_pos.tile_y) {
+                    gray = 0.0;
+                }
+
+                const min_x = world.upper_left_x + @as(f32, @floatFromInt(column)) * @as(f32, @floatFromInt(world.tile_side_in_pixels));
+                const min_y = world.upper_left_y + @as(f32, @floatFromInt(row)) * @as(f32, @floatFromInt(world.tile_side_in_pixels));
+                const max_x = min_x + @as(f32, @floatFromInt(world.tile_side_in_pixels));
+                const max_y = min_y + @as(f32, @floatFromInt(world.tile_side_in_pixels));
                 drawRectangle(buffer, min_x, min_y, max_x, max_y, gray, gray, gray);
             }
         }
@@ -502,9 +479,11 @@ pub export fn gameUpdateAndRender(thread: *ThreadContext, memory: *GameMemory, i
     const player_r: f32 = 1.0;
     const player_g: f32 = 1.0;
     const player_b: f32 = 0.0;
-    const player_left = game_state.player_x - 0.5 * player_width;
-    const player_top = game_state.player_y - player_height;
-    drawRectangle(buffer, player_left, player_top, player_left + player_width, player_top + player_height, player_r, player_g, player_b);
+    const player_left = world.upper_left_x + @as(f32, @floatFromInt(@as(i32, @intCast(world.tile_side_in_pixels)) * game_state.player_pos.tile_x)) +
+        world.meters_to_pixels * game_state.player_pos.tile_rel_x - 0.5 * world.meters_to_pixels * player_width;
+    const player_top = world.upper_left_y + @as(f32, @floatFromInt(@as(i32, @intCast(world.tile_side_in_pixels)) * game_state.player_pos.tile_y)) +
+        world.meters_to_pixels * game_state.player_pos.tile_rel_y - world.meters_to_pixels * player_height;
+    drawRectangle(buffer, player_left, player_top, player_left + world.meters_to_pixels * player_width, player_top + world.meters_to_pixels * player_height, player_r, player_g, player_b);
 }
 
 pub const UpdateAndRenderFnPtr = *const fn (*ThreadContext, *GameMemory, *GameInput, *GameOffScreenBuffer) callconv(.c) void;
